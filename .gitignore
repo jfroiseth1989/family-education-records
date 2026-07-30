@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Local config/secrets
+.env
+.env.*
+
+# Databases (defense in depth — real vault should never be inside this repo)
+*.sqlite
+*.sqlite3
+*.db
+
+# Common accidental-vault-location names (defense in depth)
+/vault/
+/data/
+/FERPA-Evidence-Vault/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
