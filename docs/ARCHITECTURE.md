@@ -41,8 +41,9 @@ architecture makes an outbound network call by default.
 │          │                   │                       │                │
 │  ┌───────▼───────────────────▼───────────────────────▼────────────┐  │
 │  │                     Core domain services                        │  │
-│  │  ingestion │ extraction │ ocr │ indexing │                      │  │
-│  │  fact/observation layer (human-review gate) │ timeline │ binder │  │
+│  │  ingestion │ versioning │ extraction │ ocr │ indexing │          │  │
+│  │  annotations │ fact/relationship layer (human-review gate) │     │  │
+│  │  timeline │ binder                                              │  │
 │  └───────┬────────────────────────────────────────────┬───────────┘  │
 │          │                                             │              │
 │  ┌───────▼────────┐                          ┌─────────▼──────────┐  │
@@ -148,7 +149,28 @@ in a generated binder.
 - Search UI supports filtering by case, date range, tag, person, record type,
   and needs-OCR status.
 
-### 3.6 Fact, Observation & Summary Layer
+### 3.6 Annotation Layer
+
+Highlights, bookmarks, and notes are how a user works with a document
+without ever touching it. All three are rows in `annotations` referencing a
+document and, where relevant, a page or an exact citation span — nothing
+about them is written into the source file.
+- Rendering is overlay-based: the self-hosted PDF.js viewer draws highlight
+  boxes and bookmark markers on top of the rendered page at view time, from
+  the annotation's stored coordinates/span, the same way any PDF annotation
+  tool works without mutating the underlying file.
+- Notes have their own full-text index (`annotation_notes_fts`), kept
+  separate from `document_text_fts` — a search result is always clearly
+  either "found in the source document" or "found in your notes about it,"
+  never ambiguous between the two.
+- Annotations are personal working notes, not evidence: they are excluded
+  from binder generation by default and can never stand in as a citation
+  source for a `verified_fact` or `verified_relationship`. If the substance
+  of a note matters to the case, the workflow is to turn it into an actual
+  fact with its own citation — same bar as anything else the app treats as
+  established.
+
+### 3.7 Fact, Observation & Summary Layer
 
 This layer sits between extraction/OCR and everything that consumes their
 output (timeline, conflicts, binder), and is what makes the following
@@ -183,7 +205,7 @@ guarantees structural rather than aspirational:
   (`verified_facts`, human-confirmed) or explicitly marked as an unreviewed
   machine guess (`ai_observations`, `ai_summaries`).
 
-### 3.7 Timeline
+### 3.8 Timeline
 - Timeline entries are **built from verified facts, not free text or raw
   AI output**: every event links to one or more `verified_facts` rows, each
   of which already carries its own citation(s) and confidence. The UI is
@@ -195,7 +217,51 @@ guarantees structural rather than aspirational:
   it — it never appears on the timeline as a suggestion; it either isn't on
   the timeline yet, or it's a confirmed fact.
 
-### 3.8 Missing / Conflicting Records
+### 3.9 Relationship Graph
+
+Connects people, organizations, documents, meetings, evaluations, IEPs,
+emails, incidents, transportation decisions, providers, services, and
+timeline events — using a small set of node types (`person`, `organization`,
+`document`, `timeline_event`) rather than a table per noun, since a meeting
+or incident is already a `timeline_event`, an IEP or evaluation is already a
+`document`, and a provider is already a `person`/`organization` with that
+role (see DATA_MODEL.md "Relationship Graph" for the full rationale).
+
+- **Reuses the verified/AI-suggested split from §3.7, exactly.**
+  `verified_relationships` is the only table a graph view renders as an
+  established connection; `ai_suggested_relationships` sits in a pending
+  queue and is never merged into the main graph until a human reviews and
+  promotes it (which creates a new verified row with lineage back to the
+  suggestion — the suggestion itself is retained, not overwritten). A
+  suggested edge that's shown at all is visually distinct (e.g. dashed,
+  labeled "Suggested — needs review").
+- **Every edge — verified or suggested — must cite at least one source
+  document.** There's no path to creating a relationship without at least
+  one citation; the UI for drawing an edge requires selecting the
+  document/page/excerpt that supports it.
+- **v1 can be entirely manual and still fully satisfy the requirement.**
+  "Never infer without marking AI-suggested and requiring approval" is
+  satisfied trivially if there's no inference at all — the user (or their
+  attorney) draws every edge by hand, each with its citation. An automatic
+  suggestion engine (e.g., "these two people are named on the same
+  document — possibly related?") is a separate, optional capability layered
+  on top later; given this system has no cloud AI, any such engine would be
+  a local heuristic, not a model call. See PROJECT_PLAN.md for whether
+  that's in scope for v1.
+- **Graph view.** A visual graph (nodes = entities, edges = relationships)
+  filterable by entity type, relationship type, date range, and confidence;
+  clicking an edge shows its citation(s) directly, consistent with every
+  other traceability guarantee in this system. A tabular "relationships
+  list" view covers the same data for anyone who prefers it to a node graph.
+- **Known trade-off:** the `from_entity_type`/`to_entity_type` polymorphic
+  reference can't be enforced as a database foreign key in SQLite. v1
+  validates "the referenced entity actually exists" at the application
+  layer, in the same transaction as the write. Flagged as a decision to
+  confirm before Phase 1 (see PROJECT_PLAN.md) — the alternative is a
+  heavier per-entity-type join-table scheme that trades simplicity for
+  stronger DB-level guarantees.
+
+### 3.10 Missing / Conflicting Records
 - **Missing records**: a user- (or attorney-) defined checklist of expected
   records (`record_requirements`), e.g. "Annual IEP review," with an expected
   date/recurrence. The app flags checklist items with no linked document as
@@ -212,7 +278,7 @@ guarantees structural rather than aspirational:
   land in `ai_observations` like any other machine suggestion, subject to
   the same human-review gate before it could ever become a flagged conflict.
 
-### 3.9 Evidence Binder
+### 3.11 Evidence Binder
 - Assembles selected documents + timeline (verified facts) + citation index
   into a single paginated PDF: cover page, table of contents, exhibit list
   (numbered, matching source documents), chronological timeline with inline
@@ -239,13 +305,17 @@ guarantees structural rather than aspirational:
 - An optional chain-of-custody appendix section can render a document's full
   `document_custody_events` history alongside it, for cases where the
   custody trail itself is part of what needs to be shown.
+- An optional relationships appendix can list selected `verified_relationships`
+  with their citations (e.g. "who evaluated the student, when, resulting in
+  which IEP") — never `ai_suggested_relationships`, which are excluded from
+  binder generation entirely until promoted.
 - Every export is recorded in `binder_exports` (hash of the resulting file,
   template version) so a binder can be regenerated or audited later —
   reproducibility matters for evidentiary use.
 - Rendered with WeasyPrint (HTML/CSS → PDF) so the binder template reuses the
   same templating system as the web UI.
 
-### 3.10 Extensibility (future document types & search capabilities)
+### 3.12 Extensibility (future document types & search capabilities)
 
 Three schema-level choices exist specifically so later versions can add
 document types, event/fact categories, or new search capabilities without a

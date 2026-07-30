@@ -27,12 +27,19 @@ its custody log from the moment of import; importing a corrected version of
 an existing document preserves the original untouched and clearly marks
 which one is current.*
 
-**Phase 2 — Extraction & Search**
+**Phase 2 — Extraction, Search & Annotations**
 Per-format text extractors (PDF, DOCX, plain text, email); page-level
 storage with offsets; low-text-yield heuristic → `needs_ocr` flagging;
-FTS5 full-text search UI (filter by case/date/tag/record type/needs-OCR).
-*Exit criteria: search returns real results across ingested documents, and
-scanned/image-only files are correctly flagged as needing OCR.*
+FTS5 full-text search UI (filter by case/date/tag/record type/needs-OCR);
+document viewer with the annotation layer (`annotations` table): highlight,
+bookmark, and note actions rendered as an overlay on the viewer, plus their
+own `annotation_notes_fts` search index kept separate from document-text
+search results. Grouped with extraction/search because annotations need the
+document viewer that this phase already builds.
+*Exit criteria: search returns real results across ingested documents,
+scanned/image-only files are correctly flagged as needing OCR, and a user
+can highlight/bookmark/note a document with zero effect on the original
+file (verified by re-checking its hash after annotating).*
 
 **Phase 3 — OCR**
 Tesseract integration; OCR job queue + background worker; OCR review UI
@@ -63,6 +70,21 @@ visual surfacing of date gaps.
 back to the exact page/excerpt and confidence level it's based on, and no
 unreviewed AI suggestion can reach the timeline directly.*
 
+**Phase 4.5 — Relationship Graph**
+`verified_relationships` / `ai_suggested_relationships` tables and their
+citation-linking tables; `organizations` and the `graph_entity_types` /
+`relationship_types` / `service_types` lookup tables; UI for drawing an edge
+between any two entities (person, organization, document, timeline event)
+with a required citation; graph view (filterable, suggested edges visually
+distinct and excluded from the main graph) and an equivalent list view. No
+automatic suggestion engine is required for this phase to be complete — see
+open decision #14; if v1 skips it, "AI-suggested" is trivially satisfied by
+having no inference at all.
+*Exit criteria: a user can connect, say, a provider to an evaluation
+document to the IEP meeting it informed, each edge citing its source, view
+the result as a graph or list, and confirm that no edge exists anywhere in
+the system without at least one citation.*
+
 **Phase 5 — Missing / Conflicting Records**
 `record_requirements` checklist entity + UI (user/attorney-defined, not
 built-in legal rules); outstanding-requirement view; conflict-flagging
@@ -77,8 +99,10 @@ exhibit list, cited timeline, appended source documents); per-section
 provenance (`binder_sections` / `binder_export_sources`) recorded for every
 generated binder; generation logic that structurally confines any included
 AI summary to its own labeled appendix section, never the narrative/exhibit/
-timeline sections; `binder_exports` tracking with output hash for
-reproducibility.
+timeline sections; optional chain-of-custody and relationships appendix
+sections (`document_custody_events`, `verified_relationships` — never
+`ai_suggested_relationships`); `binder_exports` tracking with output hash
+for reproducibility.
 *Exit criteria: a generated PDF binder where every citation and every
 timeline entry can be checked against an appended source page and its
 recorded provenance, any included AI summary is unmistakably labeled and
@@ -178,6 +202,29 @@ decide now than to change after real case data exists):
     user can accept or dismiss, or whether that's unnecessary complexity for
     v1 and purely manual linking is enough to start.
 
+13. **Polymorphic entity references in the relationship graph.** SQLite
+    can't enforce a foreign key that points at "whichever table
+    `entity_type` names." Proposed default: validate at the application
+    layer (in the same transaction as any write to
+    `verified_relationships`/`ai_suggested_relationships`), with test
+    coverage for "reject an edge pointing at a nonexistent entity" standing
+    in for the DB constraint. The alternative — a separate join table per
+    valid (from_type, to_type) pair — gives a real DB-level guarantee but
+    is materially more schema and code for a single-user local tool.
+    Confirm the application-layer approach is acceptable, or ask for the
+    stricter alternative.
+
+14. **Relationship-suggestion engine scope for v1.** As noted in
+    ARCHITECTURE.md §3.9, the "never infer without marking AI-suggested"
+    requirement is satisfied even if v1 has zero automatic inference — the
+    user draws every edge by hand. Confirm whether Phase 4.5 should also
+    build a basic local heuristic suggester (e.g., "these two people are
+    named on the same document — link them?") or whether that's deferred
+    to Phase 8 alongside other optional local-only NLP assistance. Manual-only
+    is the smaller, faster-to-ship v1; a heuristic suggester adds real value
+    for large document sets but is genuinely optional to satisfy this
+    requirement.
+
 ## Risks
 
 - **OCR accuracy risk.** Tesseract is good but not perfect on messy scans;
@@ -206,3 +253,14 @@ decide now than to change after real case data exists):
   observation-worthy threshold deliberately narrow in Phase 3.5 (see open
   decision #11) rather than routing every low-stakes extraction through the
   same queue as a suggested date or name.
+- **Relationship graph upkeep is manual effort.** Since v1 defaults to
+  hand-drawn edges (Decision #14), the graph is only as complete as the
+  time the user puts into it — unlike search or the timeline, which fill in
+  from extraction automatically. Worth setting expectations that the graph
+  is a tool you build up over a case, not something that populates itself,
+  unless/until a suggestion engine is added later.
+- **Polymorphic references without a DB constraint (Decision #13)** mean a
+  bug in the application-layer validation could theoretically let an edge
+  point at a deleted or nonexistent entity. Mitigated by requiring test
+  coverage for that validation path specifically before Phase 4.5 is
+  considered done, not just general test coverage.

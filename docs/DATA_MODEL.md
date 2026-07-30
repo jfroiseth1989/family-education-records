@@ -55,6 +55,19 @@ finalized when Phase 1 (Foundations) implementation begins.
     inclusion) appends a new row. It is append-only, like `audit_log`, and
     exists specifically so a single query against one document returns its
     complete custody history without joining across unrelated event types.
+11. **User annotations never touch original file bytes.** Highlights,
+    bookmarks, and notes are rows in `annotations` that reference a
+    document/page/citation; they are rendered as an overlay at view time
+    (e.g. a PDF.js annotation layer), never written into the source file.
+    Deleting or editing an annotation cannot affect the original in any way.
+12. **The relationship graph reuses the verified/AI-suggested split
+    established for facts, rather than inventing a separate pattern.**
+    `verified_relationships` (human-confirmed, cited, the only edges a
+    graph view renders as established) and `ai_suggested_relationships`
+    (machine-proposed, pending review, never rendered as an established
+    edge) mirror `verified_facts` / `ai_observations` exactly. Every
+    relationship — verified or suggested — must cite at least one source
+    document; there is no code path that creates an uncited edge.
 
 ## Entities
 
@@ -207,6 +220,14 @@ version) can add rows without a migration. `documents.document_type_id` FKs here
 **`fact_types`** — same pattern for `verified_facts.fact_type_id` /
 `ai_observations.fact_type_id` (date, person, decision, category, custom, ...).
 
+**`organization_types`**, **`graph_entity_types`**, **`relationship_types`**,
+**`service_types`**, **`annotation_types`** — same pattern, feeding the
+relationship graph and annotation layer below. Notably, `graph_entity_types`
+(seeded with `person` / `organization` / `document` / `timeline_event`) means
+a future node kind — e.g. a `location` or `service_type` node — is a row
+insert plus a new column-value pairing, not a schema change to the
+relationship tables themselves.
+
 **`document_metadata`** — `document_id` (FK), `key`, `value`. A generic
 key/value table for attributes that only apply to some document types
 (e.g. `audio_duration_seconds` for a future audio-transcript type, or
@@ -228,9 +249,22 @@ relational structure rather than requiring one.
 
 ### `people` / `document_people`
 - `people`: `person_id` (PK), `case_id` (FK), `name`, `role` (teacher,
-  administrator, parent, advocate, evaluator, etc.)
+  administrator, parent, advocate, evaluator, provider, etc. — a
+  **provider** is simply a person with role `provider`; there's no separate
+  provider table, to avoid two sources of truth for "who is this person")
 - `document_people`: `document_id` (FK), `person_id` (FK), `role_in_document`
   (author / recipient / mentioned)
+
+### `organizations` / `document_organizations`
+Same pattern as `people`, for entities like a school district, clinic,
+transportation company, or advocacy organization — many documents (letters,
+service agreements) are from/to an organization rather than, or in addition
+to, a named individual.
+- `organizations`: `organization_id` (PK), `case_id` (FK), `name`,
+  `organization_type_id` (FK → `organization_types` lookup table, e.g.
+  school district, clinic, transportation provider, agency, other)
+- `document_organizations`: `document_id` (FK), `organization_id` (FK),
+  `role_in_document` (author / recipient / mentioned)
 
 ## Fact, Observation & Summary Layer
 
@@ -366,6 +400,133 @@ always carries confidence context, not just competing excerpts).
 - `fact_id` (FK → `verified_facts`)
 - `note`
 
+## Relationship Graph
+
+Connects people, organizations, documents, meetings, evaluations, IEPs,
+emails, incidents, transportation decisions, providers, services, and
+timeline events. Rather than one table per noun in that list, the graph
+uses a small, extensible set of **node types** — `person`, `organization`,
+`document`, `timeline_event` — because the more specific concepts are
+already represented within those: a meeting or an incident is a
+`timeline_event` with the matching `event_type`; an evaluation or an IEP is
+a `document` with the matching `document_type`; a provider is a `person` or
+`organization` with role `provider`. This avoids two sources of truth for
+the same underlying record. If a future version needs a node type that
+genuinely isn't one of these (e.g. a physical `location`), it's a new row
+in `graph_entity_types` plus edges referencing it — not a schema redesign.
+
+### `verified_relationships`
+An edge between two entities. **Only rows in this table render as an
+established connection in the graph view.**
+- `relationship_id` (PK)
+- `case_id` (FK)
+- `relationship_type_id` (FK → `relationship_types` — e.g. attended,
+  authored, sent_to, evaluated_by, resulted_in, referenced_in,
+  provides_service_to, transported_by, responsible_for, related_to)
+- `from_entity_type` / `from_entity_id` (FK → `graph_entity_types`, plus the
+  ID within that entity's own table)
+- `to_entity_type` / `to_entity_id` — same pattern
+- `service_type_id` — nullable FK → `service_types` (e.g. speech therapy,
+  OT/PT, transportation, counseling), used when the relationship represents
+  a provider-to-service-recipient connection
+- `description` — free text, e.g. "Dr. Chen conducted the March 2024
+  evaluation referenced in the May IEP"
+- `confidence_label` — `certain` / `probable` / `uncertain` (same scale as
+  `verified_facts`)
+- `source_suggestion_id` — nullable FK → `ai_suggested_relationships`,
+  lineage when this edge was promoted from a suggestion
+- `created_by`, `created_at`, `deleted_at` (soft delete)
+
+### `verified_relationship_citations`
+Many-to-many — **every relationship must cite at least one source
+document**; this is not optional. A relationship with zero rows here is not
+a valid verified relationship.
+- `relationship_id` (FK)
+- `citation_id` (FK)
+
+### `ai_suggested_relationships`
+A machine-proposed edge. **Never rendered as an established connection** —
+graph views show these, if at all, as visually distinct (e.g. dashed,
+"Suggested — needs review") and never merge them into the main graph until
+promoted. Mirrors `ai_observations` exactly.
+- `suggestion_id` (PK)
+- `case_id` (FK)
+- `relationship_type_id` (FK)
+- `from_entity_type` / `from_entity_id`, `to_entity_type` / `to_entity_id`
+- `service_type_id` — nullable
+- `description`
+- `confidence_score` — numeric 0.0–1.0
+- `method` — e.g. "shared-document-heuristic", "co-occurrence-in-page"
+- `status` — `pending_review` / `accepted` / `rejected`
+- `reviewed_by`, `reviewed_at`
+- `created_at`
+
+Promotion works identically to observations: a human accepting a suggestion
+creates a new `verified_relationships` row with `source_suggestion_id` set;
+the suggestion row is retained, not overwritten.
+
+### `ai_suggested_relationship_citations`
+Same pattern as `verified_relationship_citations`, for suggestions — even a
+suggested relationship must point at whatever evidence (e.g. "these two
+people appear on the same document") produced the suggestion.
+- `suggestion_id` (FK)
+- `citation_id` (FK)
+
+**On the polymorphic `from_entity_type`/`to_entity_type` reference:** SQLite
+can't natively foreign-key a column whose target table varies by another
+column's value. v1 enforces "the referenced ID actually exists in the
+matching table" at the application layer (validated in the same transaction
+as any insert/update), not via a database constraint. This is a known
+trade-off worth a deliberate decision before Phase 1 coding — see
+PROJECT_PLAN.md.
+
+**On automatic suggestion generation:** the requirement is that the system
+*never* presents an inferred relationship as established without marking it
+suggested and gating it on human approval — it does not require that v1
+actually build a suggestion engine. A v1 relationship graph could be
+entirely manual (the user draws every edge, each with a citation) and would
+fully satisfy this requirement, since there's no inference happening at
+all. Given there's no cloud AI in this system (PRIVACY_SECURITY.md),
+any v1 suggestion engine would be a local heuristic (e.g., "these two
+people are named on the same document") — see PROJECT_PLAN.md for whether
+that's in scope for v1 or deferred.
+
+## Annotations (Highlights, Bookmarks, Notes)
+
+Answers the "preserve every document exactly as imported" requirement:
+annotations are pure metadata that reference a document, optionally a page
+or an exact citation span, and are rendered as an overlay at view time.
+Nothing in this table, or any code path that writes to it, ever opens a
+source file in write mode.
+
+### `annotations`
+- `annotation_id` (PK)
+- `case_id` (FK)
+- `document_id` (FK)
+- `page_id` — nullable FK (e.g. a bookmark can be page-level, no specific span)
+- `citation_id` — nullable FK (a highlight tied to an exact span reuses the
+  same citation primitive everything else uses)
+- `annotation_type_id` (FK → `annotation_types` — highlight / note / bookmark)
+- `body_text` — nullable (highlights/bookmarks may carry no text; notes do)
+- `color` — nullable, for highlight color-coding
+- `created_by`, `created_at`, `updated_at`, `deleted_at`
+
+Annotation text is indexed in its own `annotation_notes_fts` FTS5 table
+(separate from `document_text_fts`, so a search can distinguish "found in
+the source document" from "found in your own notes about it" — an important
+distinction not to blur, given everything else in this system is built
+around never confusing a source document's content with something added on top).
+
+Annotations are personal working notes, not evidence: by default they are
+**not** included in a generated binder (see `binder_export_sources` —
+`annotation` is deliberately not one of its `source_type` values in v1) and
+can never be cited by a `verified_fact` or `verified_relationship` as if
+they were a source document. A user wanting to preserve the substance of a
+note as part of the record would need to turn it into an actual fact/
+relationship with its own citation, same as any other claim — this keeps
+the "everything in the evidentiary output traces to a source document"
+guarantee from PRIVACY_SECURITY.md intact.
+
 ### `ocr_jobs`
 - `job_id` (PK)
 - `document_id` (FK)
@@ -431,7 +592,11 @@ generic `details` JSON — for a specific document's history, query
 
 An FTS5 virtual table (`document_text_fts`) indexes `document_pages`
 (`extracted_text` and `ocr_text`), external-content-linked back to
-`page_id`, so search results resolve directly to a citable page.
+`page_id`, so search results resolve directly to a citable page. A second,
+separate FTS5 table (`annotation_notes_fts`) indexes `annotations.body_text`
+— kept apart from `document_text_fts` so search results are always
+unambiguous about whether a hit is in a source document or in the user's
+own notes about one.
 
 ## Entity relationship summary
 
@@ -448,8 +613,10 @@ cases ─┬─ documents ─┬─ document_pages ─┬─ citations ─┬─
        │      │       │                  └─ document_text_fts (search index)
        │      │       ├─ document_tags ─ tags
        │      │       ├─ document_people ─ people
+       │      │       ├─ document_organizations ─ organizations
        │      │       ├─ document_metadata (EAV, extensibility)
        │      │       ├─ document_custody_events (chain of custody, append-only)
+       │      │       ├─ annotations ─ annotation_notes_fts (search index, separate from document text)
        │      │       └─ ocr_jobs
        │      └─ supersedes_document_id (self-referential — prior version chain)
        │
@@ -459,9 +626,27 @@ cases ─┬─ documents ─┬─ document_pages ─┬─ citations ─┬─
        └─ audit_log (case/system-level activity; document activity lives in document_custody_events)
 ```
 
+Relationship graph (its own diagram — every node type above can appear as
+either endpoint of an edge):
+
+```
+graph_entity_types (person | organization | document | timeline_event)
+relationship_types, service_types  (lookup tables)
+
+verified_relationship_citations ─ verified_relationships ──(from/to entity)──► {people, organizations, documents, timeline_events}
+        ▲                                  ▲
+        │ citations                        │ source_suggestion_id (lineage)
+        │                                  │
+ai_suggested_relationship_citations ─ ai_suggested_relationships ──(from/to entity)──► {people, organizations, documents, timeline_events}
+        (never rendered as an established edge; promotion creates a new
+         verified_relationships row, same pattern as ai_observations)
+```
+
 Note the two structurally distinct paths out of `citations`: one through
 `verified_facts` (human-confirmed, everything downstream can trust it) and
 one through `ai_observations` (machine-suggested, dead-ends until a human
-promotes it). `ai_summaries` doesn't sit on this graph at all — it's
+promotes it) — and the identical pattern repeated for
+`verified_relationships` / `ai_suggested_relationships`. `ai_summaries`
+doesn't sit on this graph at all — it's
 narrative text scoped to documents/ranges, permanently ineligible for
 promotion, which is what requirement 5 calls for.

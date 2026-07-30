@@ -57,8 +57,14 @@ a git working tree.**
 - SHA-256 is computed at ingest and stored; it is re-verified before every
   export or binder generation, so silent corruption or tampering is
   detectable, not just theoretically prevented.
-- OCR corrections and user annotations are stored as a separate layer, never
-  as an overwrite of the original OCR output or the source file.
+- OCR corrections are stored as a separate annotation layer, never as an
+  overwrite of the original OCR output or the source file.
+- **Highlights, bookmarks, and notes never touch the source file.** They are
+  database rows (`annotations`) referencing a document/page/citation and are
+  rendered as an overlay in the viewer at display time. No code path opens
+  an original file to write an annotation into it; deleting every
+  annotation a user ever made would leave the original byte-for-byte
+  identical to the day it was imported.
 - **A corrected or reissued record is never applied as an edit.** A
   corrected IEP, a reissued evaluation, or any updated version arrives as an
   entirely new import — its own file, its own hash, its own database row —
@@ -95,6 +101,11 @@ a git working tree.**
   output file, and per-section provenance (`binder_sections` /
   `binder_export_sources`) records exactly which documents/facts contributed
   to each section, so a binder can be reproduced or audited later.
+- Every relationship in the graph connecting people, organizations,
+  documents, meetings, evaluations, IEPs, incidents, transportation
+  decisions, providers, or timeline events must cite at least one source
+  document (`verified_relationship_citations`) — there is no path to an
+  uncited edge, verified or otherwise.
 
 ## 5. At-rest protection (open decision — see PROJECT_PLAN.md #2)
 
@@ -151,3 +162,30 @@ conflicts uses neutral language ("Possible gap — no record found for
 [user-defined requirement]", "Flagged as potentially conflicting by
 [user]") rather than conclusory language ("violation," "non-compliant").
 This is a content guideline for every phase, not just a one-time review.
+
+## 10. AI inference boundary (cross-cutting rule)
+
+One rule, applied identically everywhere the app produces something beyond
+a direct citation:
+
+> Nothing the app labels as established was asserted by the app itself. It
+> was either directly cited from a source document by a human (a verified
+> fact, a verified relationship), or it is explicitly marked as an
+> unreviewed machine output pending human judgment (an AI observation, an
+> AI-generated summary, a suggested relationship) — and the second category
+> can never silently become the first.
+
+This is enforced the same way in all three places it currently applies, and
+must be enforced the same way in any future feature that generates a
+suggestion:
+- **Facts** — `ai_observations` vs `verified_facts` (§3.7 ARCHITECTURE.md).
+- **Summaries** — `ai_summaries`, permanently ineligible for promotion to a
+  fact under any review status (§3.7 ARCHITECTURE.md).
+- **Relationships** — `ai_suggested_relationships` vs `verified_relationships`
+  (§3.9 ARCHITECTURE.md).
+
+In each case: the machine-generated row lives in its own table, is never
+read by downstream features (timeline, conflicts, binder, graph view) as if
+it were confirmed, and promotion — where promotion is even possible —
+always creates a new row rather than mutating the suggestion, preserving
+the suggestion-to-confirmation lineage.
