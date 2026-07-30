@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases">&larr; All cases</a></p>
+  <h1>{{ case.label }} <span class="status-badge status-{{ case.status }}">{{ case.status }}</span></h1>
+  {% if case.description %}<p class="case-description">{{ case.description }}</p>{% endif %}
+  <p class="meta">Case #{{ case.case_id }} · created {{ case.created_at }}</p>
+
+  <section class="panel">
+    <h2>Edit case</h2>
+    <form method="post" action="/cases/{{ case.case_id }}/edit">
+      <label>
+        Label
+        <input type="text" name="label" required maxlength="200" value="{{ case.label }}">
+      </label>
+      <label>
+        Description
+        <textarea name="description" rows="2">{{ case.description or "" }}</textarea>
+      </label>
+      <label>
+        Status
+        <select name="status">
+          {% for s in case_statuses %}
+            <option value="{{ s }}" {% if s == case.status %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">Save changes</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Add a document</h2>
+    <p class="hint">
+      The file is copied read-only into the vault; the original you select
+      here is never modified. A SHA-256 hash and a chain-of-custody entry
+      are recorded immediately.
+    </p>
+    <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data">
+      <label>
+        File
+        <input type="file" name="file" required>
+      </label>
+      <label>
+        Document type
+        <select name="document_type_id">
+          <option value="">(unspecified)</option>
+          {% for dt in document_types %}
+            <option value="{{ dt.type_id }}">{{ dt.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Source
+        <input type="text" name="source" maxlength="300" placeholder="e.g. emailed by district">
+      </label>
+      <label>
+        Notes
+        <textarea name="notes" rows="2"></textarea>
+      </label>
+      <button type="submit">Ingest document</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Documents ({{ documents | length }})</h2>
+    {% if documents %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Ingested</th><th>SHA-256</th></tr>
+        </thead>
+        <tbody>
+          {% for doc in documents %}
+            <tr>
+              <td><a href="/documents/{{ doc.document_id }}">{{ doc.original_filename }}</a></td>
+              <td>{{ doc.document_type.name if doc.document_type else "—" }}</td>
+              <td>
+                {% if doc.version_group_id %}
+                  v{{ doc.version_number }}
+                  {% if doc.is_current_version %}
+                    <span class="status-badge status-current">current</span>
+                  {% else %}
+                    <span class="status-badge status-superseded">superseded</span>
+                  {% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ doc.ingested_at }}</td>
+              <td class="hash"><code>{{ doc.sha256_hash[:12] }}…</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No documents ingested yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}

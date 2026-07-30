@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Cases — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <h1>Cases</h1>
+
+  <section class="panel">
+    <h2>New case</h2>
+    <form method="post" action="/cases">
+      <label>
+        Label
+        <input type="text" name="label" required maxlength="200" placeholder="e.g. Jane Doe — 2025 IEP Dispute">
+      </label>
+      <label>
+        Description
+        <textarea name="description" rows="2"></textarea>
+      </label>
+      <button type="submit">Create case</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Existing cases</h2>
+    {% if cases %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Label</th><th>Status</th><th>Created</th><th>Documents</th></tr>
+        </thead>
+        <tbody>
+          {% for case in cases %}
+            <tr>
+              <td><a href="/cases/{{ case.case_id }}">{{ case.label }}</a></td>
+              <td><span class="status-badge status-{{ case.status }}">{{ case.status }}</span></td>
+              <td>{{ case.created_at }}</td>
+              <td>{{ case.documents | length }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No cases yet — create one above.</p>
+    {% endif %}
+  </section>
+{% endblock %}

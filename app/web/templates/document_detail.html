@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{{ document.original_filename }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ document.case_id }}">&larr; {{ document.case.label }}</a></p>
+  <h1>
+    {{ document.original_filename }}
+    {% if document.version_group_id %}
+      {% if document.is_current_version %}
+        <span class="status-badge status-current">current version</span>
+      {% else %}
+        <span class="status-badge status-superseded">superseded</span>
+      {% endif %}
+    {% endif %}
+  </h1>
+
+  <section class="panel">
+    <h2>Document details</h2>
+    <table class="kv-table">
+      <tr><th>Document ID</th><td>{{ document.document_id }}</td></tr>
+      <tr><th>Type</th><td>{{ document.document_type.name if document.document_type else "—" }}</td></tr>
+      <tr><th>Source</th><td>{{ document.source or "—" }}</td></tr>
+      <tr><th>Notes</th><td>{{ document.notes or "—" }}</td></tr>
+      <tr><th>Ingested</th><td>{{ document.ingested_at }} by {{ document.ingested_by }}</td></tr>
+      <tr><th>File size</th><td>{{ document.file_size_bytes }} bytes</td></tr>
+      <tr><th>MIME type</th><td>{{ document.mime_type or "—" }}</td></tr>
+      <tr><th>SHA-256</th><td><code>{{ document.sha256_hash }}</code></td></tr>
+      <tr><th>Storage path</th><td><code>{{ document.stored_path }}</code></td></tr>
+    </table>
+    <p>
+      <a href="/documents/{{ document.document_id }}/file">Download / view original file</a>
+      &nbsp;·&nbsp;
+      <form method="post" action="/documents/{{ document.document_id }}/verify" style="display:inline">
+        <button type="submit">Verify integrity now</button>
+      </form>
+    </p>
+    <p class="hint">
+      "Verify integrity" recomputes the SHA-256 hash of the stored file and
+      compares it to the hash recorded at import, logging the result below
+      either way — see the chain-of-custody log.
+    </p>
+  </section>
+
+  {% if version_siblings %}
+    <section class="panel">
+      <h2>Version history</h2>
+      <table class="data-table">
+        <thead><tr><th>Version</th><th>Filename</th><th>Ingested</th><th>Status</th><th>Note</th></tr></thead>
+        <tbody>
+          {% for v in version_siblings %}
+            <tr {% if v.document_id == document.document_id %}class="current-row"{% endif %}>
+              <td>v{{ v.version_number }}</td>
+              <td><a href="/documents/{{ v.document_id }}">{{ v.original_filename }}</a></td>
+              <td>{{ v.ingested_at }}</td>
+              <td>
+                {% if v.is_current_version %}
+                  <span class="status-badge status-current">current</span>
+                {% else %}
+                  <span class="status-badge status-superseded">superseded</span>
+                {% endif %}
+              </td>
+              <td>{{ v.version_note or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
+  {% if document.is_current_version %}
+    <section class="panel">
+      <h2>Link a corrected / reissued version</h2>
+      <p class="hint">
+        This uploads a new file as its own document, then marks it as the
+        new current version superseding this one. This document is never
+        modified or deleted — it remains in the vault exactly as imported.
+      </p>
+      <form method="post" action="/documents/{{ document.document_id }}/new-version" enctype="multipart/form-data">
+        <label>
+          Corrected/reissued file
+          <input type="file" name="file" required>
+        </label>
+        <label>
+          Reason for the new version
+          <input type="text" name="version_note" maxlength="500" placeholder="e.g. District reissued with corrected evaluation date">
+        </label>
+        <button type="submit">Ingest as new version</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <section class="panel">
+    <h2>Chain of custody</h2>
+    <table class="data-table">
+      <thead><tr><th>Event</th><th>Timestamp</th><th>Actor</th><th>Hash at event</th><th>Details</th></tr></thead>
+      <tbody>
+        {% for event in custody_events %}
+          <tr>
+            <td>{{ event.event_type }}</td>
+            <td>{{ event.event_timestamp }}</td>
+            <td>{{ event.actor }}</td>
+            <td><code>{{ event.sha256_hash_at_event[:12] }}…</code></td>
+            <td>{{ event.details or "—" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

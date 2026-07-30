@@ -1,0 +1,123 @@
+/* Minimal, dependency-free styling. No external fonts, no CDN assets --
+   see docs/PRIVACY_SECURITY.md §2 (nothing in the UI should call home). */
+
+:root {
+  color-scheme: light dark;
+  --border: #d0d0d0;
+  --panel-bg: rgba(127, 127, 127, 0.06);
+  --accent: #2b6cb0;
+  --current: #1a7f37;
+  --superseded: #915930;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 1.5rem 3rem;
+  line-height: 1.5;
+}
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.app-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.app-subtitle {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  background: var(--panel-bg);
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+form label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+form input, form textarea, form select {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+button {
+  padding: 0.45rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.data-table, .kv-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.data-table th, .data-table td, .kv-table th, .kv-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.kv-table th {
+  width: 180px;
+  opacity: 0.75;
+  font-weight: 600;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.status-active, .status-current { background: rgba(26, 127, 55, 0.15); color: var(--current); }
+.status-closed, .status-superseded { background: rgba(145, 89, 48, 0.15); color: var(--superseded); }
+.status-archived { background: rgba(127, 127, 127, 0.15); }
+
+.current-row { font-weight: 600; }
+
+.hash code, .kv-table code {
+  font-size: 0.85em;
+}
+
+.hint, .meta {
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.empty-state {
+  opacity: 0.7;
+  font-style: italic;
+}

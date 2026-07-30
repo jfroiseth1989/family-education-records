@@ -1,0 +1,11 @@
+Alembic migration environment for the vault database.
+
+The database URL is never fixed here — it's set at runtime from the
+resolved vault path (see app/db/migrate.py::run_migrations). Generate a
+new revision after changing app/db/models.py with:
+
+    .venv/bin/alembic -c alembic.ini revision --autogenerate -m "describe the change"
+
+then review the generated file before committing — autogenerate is a
+starting point, not a guarantee, especially for SQLite (see env.py's
+render_as_batch note on ALTER TABLE limitations).
