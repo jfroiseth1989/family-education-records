@@ -32,27 +32,49 @@ layer that never overwrites raw OCR output); reprocessing on demand.
 *Exit criteria: a flagged scanned document can be OCR'd, reviewed, and
 corrected without ever losing the original OCR output or touching the source file.*
 
+**Phase 3.5 — Fact & Observation Layer**
+`verified_facts` / `ai_observations` / `ai_summaries` tables and the
+promotion workflow (review an observation → accept → new verified fact with
+lineage, or reject); mandatory confidence input on every verified fact;
+mandatory fixed label rendering on every AI summary. This sits between OCR
+(Phase 3) and Timeline (Phase 4) because the timeline is now built on
+verified facts, not raw citations.
+*Exit criteria: an AI-suggested date or name can be reviewed and either
+promoted to a verified fact (with visible lineage back to the suggestion) or
+rejected; nothing machine-generated is visible outside a clearly labeled
+"pending review" state until a human acts on it.*
+
 **Phase 4 — Timeline**
-Timeline event model; UI for attaching a citation (document + page + span)
-to a date; date-extraction suggestions (user-confirmed, never auto-committed);
-timeline view with filter/sort; visual surfacing of date gaps.
+Timeline event model built on `verified_facts` (via `timeline_event_facts`);
+UI for attaching a verified fact — or creating one directly from a citation —
+to a date; date-extraction suggestions flow through the Phase 3.5 review gate
+before they can be attached to an event; timeline view with filter/sort;
+visual surfacing of date gaps.
 *Exit criteria: every timeline event on screen can be traced, in one click,
-back to the exact page/excerpt it's based on.*
+back to the exact page/excerpt and confidence level it's based on, and no
+unreviewed AI suggestion can reach the timeline directly.*
 
 **Phase 5 — Missing / Conflicting Records**
 `record_requirements` checklist entity + UI (user/attorney-defined, not
 built-in legal rules); outstanding-requirement view; conflict-flagging
-workflow with side-by-side citation comparison.
+workflow built on `verified_facts` with side-by-side comparison (including
+each side's confidence level).
 *Exit criteria: a user can define "expected records" and see which are
-unmet, and can flag two excerpts as conflicting with a note.*
+unmet, and can flag two verified facts as conflicting with a note.*
 
 **Phase 6 — Evidence Binder**
 Binder HTML/CSS template; PDF assembly via WeasyPrint + PyMuPDF (cover, TOC,
-exhibit list, cited timeline, appended source documents); `binder_exports`
-tracking with output hash for reproducibility.
-*Exit criteria: a generated PDF binder where every citation can be checked
-against an appended source page, and the export is reproducible from its
-recorded document/event set.*
+exhibit list, cited timeline, appended source documents); per-section
+provenance (`binder_sections` / `binder_export_sources`) recorded for every
+generated binder; generation logic that structurally confines any included
+AI summary to its own labeled appendix section, never the narrative/exhibit/
+timeline sections; `binder_exports` tracking with output hash for
+reproducibility.
+*Exit criteria: a generated PDF binder where every citation and every
+timeline entry can be checked against an appended source page and its
+recorded provenance, any included AI summary is unmistakably labeled and
+segregated in its own appendix, and the export is reproducible from its
+recorded section/source manifest.*
 
 **Phase 7 — Hardening**
 Full audit-log coverage review; one-click vault backup/export; at-rest
@@ -119,6 +141,24 @@ decide now than to change after real case data exists):
    downloaded outside of that. Worth you knowing this before running it, so
    you can audit the dependency list first if you want to.
 
+10. **Confidence scale definition.** Proposed default: a required 3-value
+    `confidence_label` (`certain` / `probable` / `uncertain`) on every
+    verified fact, plus an optional numeric `confidence_score` (0.0–1.0)
+    populated when the fact came from a scored method (OCR, date-parser).
+    Confirm this is the right scale, or specify a different one (e.g. a
+    5-point scale, or numeric-only) — this affects UI design in Phase 3.5
+    and is worth locking in before that phase starts.
+
+11. **What counts as an "AI observation" in v1.** Given no cloud AI is used
+    (per PRIVACY_SECURITY.md), Phase 3.5's `ai_observations` in v1 would
+    realistically be populated by: OCR text (confidence from Tesseract),
+    regex/heuristic date-parsing, and simple heuristic name/entity matching
+    against the `people` table — not a general-purpose LLM. Confirm that's
+    the intended v1 scope for "AI-generated," versus deferring some of these
+    (e.g. date-parsing) to be treated as deterministic/native extraction
+    rather than routed through the observation-review workflow at all. This
+    changes how much review-queue UI Phase 3.5 actually needs for v1.
+
 ## Risks
 
 - **OCR accuracy risk.** Tesseract is good but not perfect on messy scans;
@@ -140,3 +180,10 @@ decide now than to change after real case data exists):
 - **Packaging friction on macOS Gatekeeper / Windows SmartScreen** if this
   ever moves from "start script" to "real installer" in a later phase —
   not a v1 concern given your answer, but worth flagging for Phase 7 planning.
+- **Review-queue fatigue.** If every OCR'd word or date-parse hit becomes an
+  `ai_observations` row awaiting review, the review queue could get large
+  enough that a user starts bulk-accepting without really checking — which
+  would defeat the point of the human-review gate. Mitigated by keeping the
+  observation-worthy threshold deliberately narrow in Phase 3.5 (see open
+  decision #11) rather than routing every low-stakes extraction through the
+  same queue as a suggested date or name.

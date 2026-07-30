@@ -41,7 +41,8 @@ architecture makes an outbound network call by default.
 │          │                   │                       │                │
 │  ┌───────▼───────────────────▼───────────────────────▼────────────┐  │
 │  │                     Core domain services                        │  │
-│  │  ingestion │ extraction │ ocr │ indexing │ timeline │ binder     │  │
+│  │  ingestion │ extraction │ ocr │ indexing │                      │  │
+│  │  fact/observation layer (human-review gate) │ timeline │ binder │  │
 │  └───────┬────────────────────────────────────────────┬───────────┘  │
 │          │                                             │              │
 │  ┌───────▼────────┐                          ┌─────────▼──────────┐  │
@@ -102,38 +103,109 @@ architecture makes an outbound network call by default.
 - Search UI supports filtering by case, date range, tag, person, record type,
   and needs-OCR status.
 
-### 3.5 Timeline
-- Timeline entries are **built from citations, not free text**: every event
-  must link to at least one `(document, page, span)` reference. The UI is
-  built around "attach this quote to a date" rather than a free-text journal,
-  so every timeline claim is traceable to an exact source location.
-- Dates can be extracted-and-suggested (regex/date-parsing over text) but are
-  always user-confirmed before an event is marked "confirmed" vs "needs review."
+### 3.5 Fact, Observation & Summary Layer
 
-### 3.6 Missing / Conflicting Records
+This layer sits between extraction/OCR and everything that consumes their
+output (timeline, conflicts, binder), and is what makes the following
+guarantees structural rather than aspirational:
+
+- **Every fact-like record carries a confidence level and at least one
+  citation** — no code path in extraction, OCR, or date-parsing produces a
+  bare, unattributed "fact." See `verified_facts`/`ai_observations` in
+  DATA_MODEL.md, both of which require a citation and a confidence value.
+- **Verified facts and AI-generated observations are separate tables, not a
+  shared table with a status flag.** Anything machine-suggested (a
+  date-parser hit, an OCR-derived name, a suggested category) lands in
+  `ai_observations` with `status = pending_review` and a confidence score.
+  It is **not visible to the timeline, conflict tracker, or binder
+  narrative** — those only ever read `verified_facts`. A human reviewing an
+  observation and accepting it causes the app to create a *new*
+  `verified_facts` row that references the originating observation
+  (`source_observation_id`) for lineage; the observation row itself is
+  never edited or deleted, so the suggestion-to-confirmation history is
+  always auditable.
+- **AI-generated summaries (free-text) are a third, separate concept** —
+  `ai_summaries` — and can never be promoted into `verified_facts` under any
+  circumstance, reviewed or not. A summary is interpretive synthesis, not a
+  discrete citable claim, so promoting it to "fact" status would misrepresent
+  what it is. Every summary carries a fixed, app-enforced label ("AI-Generated
+  Summary — Unverified, Requires Human Review. Not a Fact or Legal
+  Conclusion.") that renders wherever the summary appears, on screen or in
+  an exported binder, and defaults to `review_status = pending_review`.
+- This layer is where the "not legal advice" boundary is enforced in code,
+  not just in UI copy: nothing the app labels as a fact was asserted by the
+  app itself — it was either directly cited from a source document
+  (`verified_facts`, human-confirmed) or explicitly marked as an unreviewed
+  machine guess (`ai_observations`, `ai_summaries`).
+
+### 3.6 Timeline
+- Timeline entries are **built from verified facts, not free text or raw
+  AI output**: every event links to one or more `verified_facts` rows, each
+  of which already carries its own citation(s) and confidence. The UI is
+  built around "attach this confirmed fact to a date" rather than a
+  free-text journal, so every timeline claim is traceable to an exact source
+  location and carries a confidence level.
+- Dates can be extracted-and-suggested (regex/date-parsing over text), but a
+  suggestion is an `ai_observations` row until a human reviews and promotes
+  it — it never appears on the timeline as a suggestion; it either isn't on
+  the timeline yet, or it's a confirmed fact.
+
+### 3.7 Missing / Conflicting Records
 - **Missing records**: a user- (or attorney-) defined checklist of expected
   records (`record_requirements`), e.g. "Annual IEP review," with an expected
   date/recurrence. The app flags checklist items with no linked document as
   outstanding. The app does **not** ship a built-in table of legal deadlines —
   that's a deliberate boundary given the "not legal advice" framing (see
   PROJECT_PLAN.md, decision #3).
-- **Conflicting records**: a human-driven workflow. The user (or attorney)
-  selects two or more spans across documents and flags them as conflicting,
-  with a note. The UI supports side-by-side comparison. No automated
-  contradiction detection in v1 (flagged as a stretch goal, local-only NLP,
-  in PROJECT_PLAN.md).
+- **Conflicting records**: a human-driven workflow, built on `verified_facts`
+  (not raw citations) so a flagged conflict always shows each side's
+  confidence level, not just competing excerpts. The user (or attorney)
+  selects two or more verified facts across documents and flags them as
+  conflicting, with a note. The UI supports side-by-side comparison. No
+  automated contradiction detection in v1 (flagged as a stretch goal,
+  local-only NLP, in PROJECT_PLAN.md) — and if added later, its output would
+  land in `ai_observations` like any other machine suggestion, subject to
+  the same human-review gate before it could ever become a flagged conflict.
 
-### 3.7 Evidence Binder
-- Assembles selected documents + timeline + citation index into a single
-  paginated PDF: cover page, table of contents, exhibit list (numbered,
-  matching source documents), chronological timeline with inline citations,
-  and appended source documents (merged via PyMuPDF) so every citation in the
-  binder can be checked against the actual page it cites.
-- Every export is recorded in `binder_exports` (what documents/events were
-  included, hash of the resulting file) so a binder can be regenerated or
-  audited later — reproducibility matters for evidentiary use.
+### 3.8 Evidence Binder
+- Assembles selected documents + timeline (verified facts) + citation index
+  into a single paginated PDF: cover page, table of contents, exhibit list
+  (numbered, matching source documents), chronological timeline with inline
+  citations, and appended source documents (merged via PyMuPDF) so every
+  citation in the binder can be checked against the actual page it cites.
+- **Full provenance per section, not just per binder.** Every rendered
+  section (`binder_sections`) records exactly which documents, verified
+  facts, or citations contributed to it (`binder_export_sources`) — so a
+  reader (or the user's attorney) can see precisely which source documents
+  back a given timeline entry or exhibit, not just that "this binder
+  included these documents somewhere."
+- **AI-generated summaries are structurally confined to a separate,
+  clearly-labeled appendix** (`section_type = summary_appendix`) — the
+  binder-generation logic itself refuses to place `ai_summaries` content
+  into exhibit, timeline, or narrative sections, so this separation is
+  enforced by the generator, not left to template discipline. The mandatory
+  label text renders on every such section regardless of review status.
+- Every export is recorded in `binder_exports` (hash of the resulting file,
+  template version) so a binder can be regenerated or audited later —
+  reproducibility matters for evidentiary use.
 - Rendered with WeasyPrint (HTML/CSS → PDF) so the binder template reuses the
   same templating system as the web UI.
+
+### 3.9 Extensibility (future document types & search capabilities)
+
+Three schema-level choices exist specifically so later versions can add
+document types, event/fact categories, or new search capabilities without a
+redesign (full detail in DATA_MODEL.md "Extensibility"):
+
+- `document_types`, `event_types`, and `fact_types` are lookup tables, not
+  hardcoded enum columns — a new document type (e.g. audio transcripts,
+  spreadsheets) is a row insert.
+- `document_metadata` is a generic key/value table for attributes that only
+  apply to some document types, so type-specific fields don't require
+  nullable columns added to `documents` for every hypothetical future format.
+- Search is layered on stable IDs (`page_id`, `citation_id`), so a future
+  capability — e.g. local-only semantic/vector search — is an additive table
+  referencing those IDs, not a change to the tables it indexes.
 
 ## 4. Technology Stack
 
