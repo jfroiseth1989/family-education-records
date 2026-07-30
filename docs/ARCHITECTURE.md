@@ -71,9 +71,54 @@ architecture makes an outbound network call by default.
 - Computes SHA-256 immediately; records size, mime type, ingestion timestamp.
 - Sets the copied file read-only at the filesystem level where the OS supports it.
 - Detects exact duplicates by hash (flags, does not silently discard).
-- Writes an `audit_log` entry for every ingestion.
+- Writes the document's `imported` `document_custody_events` row in the same
+  transaction as the `documents` row — filename, hash, size, and storage
+  location are recorded as part of the document coming into existence, not
+  as a follow-up step that could be skipped.
+- Optionally, the user marks the new file as a new (or prior) version of an
+  existing document — see §3.2.
 
-### 3.2 Extraction
+### 3.2 Document Versioning & Chain of Custody
+
+**Versioning.** A corrected record or a reissued IEP is never imported as an
+edit to the existing document — it's ingested as an ordinary new document
+(own hash, own file, own row), which the user then explicitly links to the
+earlier one as a new version. Linking two documents this way:
+- creates a `document_version_groups` row on first use (or reuses the
+  existing group if the earlier document already has one),
+- sets `supersedes_document_id` on the new row to point at the version it
+  replaces,
+- flips `is_current_version` to `false` on the previous current version and
+  `true` on the new one, and updates the group's `current_document_id`, all
+  in one transaction,
+- appends `version_linked` / `version_superseded` custody events on both
+  documents.
+
+Every previous version remains fully intact on disk and in the database —
+"current" is a label on a relationship, not a state that erases anything.
+Browsing a case shows the current version by default; a superseded
+version's detail view is clearly marked "Superseded by [version] — view
+current," and the current version's view links back through its version
+history. Facts and citations that reference a superseded version's pages
+keep working (that historical page is exactly what they cite) but the UI
+flags them as "based on a superseded version" so the user can decide
+whether to also cite the current version.
+
+**Chain of custody.** Every document accumulates an append-only
+`document_custody_events` trail from the moment it's imported: the initial
+`imported` event, then one row for every subsequent action — extraction,
+OCR, tagging, linking to a fact, version linking, inclusion in a binder
+export. Each row independently records the hash, size, and storage location
+*as observed at that event*, not just once at ingestion — so the ledger
+itself shows hash consistency over the document's life rather than relying
+on a single check. This is intentionally a dedicated, structured table
+(§ see DATA_MODEL.md `document_custody_events`) rather than reuse of the
+general `audit_log`, since a custody record needs those fields to always be
+present, not optionally buried in a JSON blob. A document's full custody
+history is viewable from its detail page and can be included as an appendix
+in a generated binder.
+
+### 3.3 Extraction
 - Format-specific extractors run per document, producing page/paragraph-level
   text plus offsets:
   - PDF → native text layer + per-page word bounding boxes (PyMuPDF).
@@ -86,7 +131,7 @@ architecture makes an outbound network call by default.
   `needs_ocr = true`. This is how "identify files that need OCR" is implemented:
   deterministically, not by guessing file type alone.
 
-### 3.3 OCR
+### 3.4 OCR
 - Tesseract OCR (fully offline, no cloud vision API) via `pytesseract`,
   rendering pages to images with PyMuPDF/`pdf2image`.
 - Runs as background jobs (`ocr_jobs` table), so large scans don't block the UI.
@@ -98,12 +143,12 @@ architecture makes an outbound network call by default.
 - Manual corrections to OCR text are stored as an annotation layer on top of
   the original OCR output, not as an overwrite — the raw OCR output is retained.
 
-### 3.4 Indexing / Search
+### 3.5 Indexing / Search
 - SQLite FTS5 virtual table over page-level extracted/OCR text.
 - Search UI supports filtering by case, date range, tag, person, record type,
   and needs-OCR status.
 
-### 3.5 Fact, Observation & Summary Layer
+### 3.6 Fact, Observation & Summary Layer
 
 This layer sits between extraction/OCR and everything that consumes their
 output (timeline, conflicts, binder), and is what makes the following
@@ -138,7 +183,7 @@ guarantees structural rather than aspirational:
   (`verified_facts`, human-confirmed) or explicitly marked as an unreviewed
   machine guess (`ai_observations`, `ai_summaries`).
 
-### 3.6 Timeline
+### 3.7 Timeline
 - Timeline entries are **built from verified facts, not free text or raw
   AI output**: every event links to one or more `verified_facts` rows, each
   of which already carries its own citation(s) and confidence. The UI is
@@ -150,7 +195,7 @@ guarantees structural rather than aspirational:
   it — it never appears on the timeline as a suggestion; it either isn't on
   the timeline yet, or it's a confirmed fact.
 
-### 3.7 Missing / Conflicting Records
+### 3.8 Missing / Conflicting Records
 - **Missing records**: a user- (or attorney-) defined checklist of expected
   records (`record_requirements`), e.g. "Annual IEP review," with an expected
   date/recurrence. The app flags checklist items with no linked document as
@@ -167,7 +212,7 @@ guarantees structural rather than aspirational:
   land in `ai_observations` like any other machine suggestion, subject to
   the same human-review gate before it could ever become a flagged conflict.
 
-### 3.8 Evidence Binder
+### 3.9 Evidence Binder
 - Assembles selected documents + timeline (verified facts) + citation index
   into a single paginated PDF: cover page, table of contents, exhibit list
   (numbered, matching source documents), chronological timeline with inline
@@ -185,13 +230,22 @@ guarantees structural rather than aspirational:
   into exhibit, timeline, or narrative sections, so this separation is
   enforced by the generator, not left to template discipline. The mandatory
   label text renders on every such section regardless of review status.
+- **Defaults to current versions.** Selecting a document for the binder
+  pulls in whichever version has `is_current_version = true` unless the user
+  deliberately chooses an older version (e.g., to show that a correction
+  occurred); an included superseded version is rendered with a visible
+  "SUPERSEDED — see current version" marker rather than presented as if it
+  were the operative record.
+- An optional chain-of-custody appendix section can render a document's full
+  `document_custody_events` history alongside it, for cases where the
+  custody trail itself is part of what needs to be shown.
 - Every export is recorded in `binder_exports` (hash of the resulting file,
   template version) so a binder can be regenerated or audited later —
   reproducibility matters for evidentiary use.
 - Rendered with WeasyPrint (HTML/CSS → PDF) so the binder template reuses the
   same templating system as the web UI.
 
-### 3.9 Extensibility (future document types & search capabilities)
+### 3.10 Extensibility (future document types & search capabilities)
 
 Three schema-level choices exist specifically so later versions can add
 document types, event/fact categories, or new search capabilities without a
@@ -273,7 +327,7 @@ location *outside* the repo, e.g. `~/FERPA-Evidence-Vault/`):**
 ```
 FERPA-Evidence-Vault/
 ├── vault.json                  # vault metadata: version, created_at, encryption flag
-├── db.sqlite                   # all cases, documents, timeline, tags, audit log, FTS5 index
+├── db.sqlite                   # cases, documents + versions, custody log, timeline, tags, audit log, FTS5 index
 ├── cases/
 │   └── <case_id>-<slug>/
 │       ├── case.json           # case metadata

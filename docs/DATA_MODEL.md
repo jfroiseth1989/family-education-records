@@ -41,6 +41,20 @@ finalized when Phase 1 (Foundations) implementation begins.
    hardcoded enums or schema columns.** Adding a new document type or event
    category in a future version is an `INSERT`, not a migration that
    touches existing tables. See "Extensibility" below.
+9. **A corrected or updated record is a new, separate `documents` row —
+   never an edit to an existing one.** Versioning is a *relationship*
+   between immutable rows (`document_version_groups`, `supersedes_document_id`),
+   not a mutation of a row's content, filename, or hash. Every previous
+   version stays fully intact, on disk and in the database, indefinitely.
+10. **Chain of custody is a first-class, structured ledger per document**
+    (`document_custody_events`) — not something reconstructed after the
+    fact from a generic activity log. Every document gets an `imported`
+    entry recording filename, hash, size, and storage location at the
+    moment of ingestion, and every subsequent action on that document
+    (extraction, OCR, tagging, fact-linking, version superseding, export
+    inclusion) appends a new row. It is append-only, like `audit_log`, and
+    exists specifically so a single query against one document returns its
+    complete custody history without joining across unrelated event types.
 
 ## Entities
 
@@ -69,6 +83,86 @@ One row per ingested file (including attachments extracted from emails).
 - `ingested_at`, `ingested_by`
 - `notes`
 - `deleted_at` (nullable — soft delete)
+- `version_group_id` — nullable FK → `document_version_groups`. Null means
+  this document has no known other versions (the common case). Set only
+  when the user explicitly links this import to an existing document as a
+  new (or prior) version.
+- `version_number` — nullable integer, sequential within `version_group_id`
+  (1, 2, 3, ...)
+- `is_current_version` — bool, default `true`. Exactly one `true` per
+  `version_group_id` at any time; promoting a new version to current flips
+  the previous current version's row to `false` in the same transaction —
+  it is never deleted or hidden, only relabeled.
+- `supersedes_document_id` — nullable, self-referential FK → `documents`.
+  Direct pointer to the immediately-prior version, so the chain is walkable
+  even without querying the whole group.
+- `version_note` — free text entered by the user at the time of linking,
+  e.g. "Corrected evaluation date; district reissued 2025-02-01."
+
+None of `original_filename`, `sha256_hash`, `stored_path`, or
+`file_size_bytes` are ever updated in place on an existing row once set —
+see design principle 9. A "corrected IEP" is always a brand-new row with its
+own hash and its own file under `originals/`.
+
+### `document_version_groups`
+The stable identity for a "logical record" across its versions — e.g. "IEP
+— Jane Doe" spans however many corrected/reissued files arrive over time.
+- `group_id` (PK)
+- `case_id` (FK)
+- `label` — user-assigned, e.g. "IEP — Jane Doe"
+- `created_at`
+- `current_document_id` — FK → `documents.document_id`, denormalized
+  pointer to whichever version currently has `is_current_version = true`,
+  kept in sync by the app in the same transaction as any version change,
+  so "what's the current version of X" is a single lookup rather than a
+  scan over the group.
+
+Grouping is opt-in and user-driven: ingesting a file never auto-detects
+"this is probably a new version of that other file." The user (or their
+attorney) explicitly links two documents as versions of each other — either
+at import time ("this replaces an earlier document") or later from a
+document's detail view ("link as a new version of..."). This is deliberate:
+auto-matching similar-looking records is exactly the kind of judgment call
+that belongs to the user, not a heuristic, given what's riding on getting it right.
+
+### `document_custody_events`
+The chain-of-custody ledger. One row per action taken on a document, from
+import forward. Append-only — no `UPDATE`/`DELETE` exposed through the app,
+same rule as `audit_log`. This is deliberately a dedicated, structurally
+required table rather than reuse of `audit_log`'s generic JSON `details`
+field: a chain-of-custody record needs its core fields (hash, size,
+location) to be actual columns that are always present, not optionally
+present inside a blob.
+- `custody_event_id` (PK)
+- `document_id` (FK)
+- `event_type` — `imported` / `hash_verified` / `extracted` / `ocr_run` /
+  `tagged` / `linked_to_fact` / `version_linked` / `version_superseded` /
+  `included_in_export` / `annotated` / `soft_deleted` / `restored`
+- `event_timestamp`
+- `actor` — user identifier, or "system" for automated steps (e.g. an
+  extraction job)
+- `original_filename` — recorded on the `imported` event (and thereafter
+  redundant with `documents.original_filename`, but kept here so the
+  custody row is self-contained even if it's ever queried independently)
+- `sha256_hash_at_event` — the hash as verified *at this event*, on every
+  event type, not just `imported`. Because this is captured every time,
+  the custody trail itself shows hash consistency (or flags a mismatch)
+  across the document's entire history, rather than relying on a single
+  hash check at ingestion.
+- `file_size_bytes_at_event`
+- `storage_location_at_event` — the file's path under the vault at the time
+  of this event (originals are never moved, so in practice this is constant,
+  but recording it at every event makes that an observed fact in the ledger,
+  not an assumption)
+- `details` — JSON, event-specific (e.g. which case/tag/fact/export an
+  action relates to)
+
+The `imported` event is created in the same transaction as the `documents`
+row itself, so it is impossible for a document to exist in the system
+without a corresponding first custody entry recording import date, original
+filename, hash, size, and storage location — directly satisfying the
+requirement that every imported document has a chain-of-custody record from
+the moment it enters the vault.
 
 ### `document_pages`
 Page-level text, one row per page per document.
@@ -318,10 +412,16 @@ separation checkable by querying the export, not just by trusting the
 template author.
 
 ### `audit_log`
-Append-only; no UPDATE/DELETE exposed through the app.
+Append-only; no UPDATE/DELETE exposed through the app. Covers case- and
+system-level activity (case created, requirement added/edited, conflict
+flagged, binder exported, vault backup taken). Document-level actions are
+recorded in `document_custody_events` instead, which is deliberately more
+rigorous (structured hash/size/location on every row) than this table's
+generic `details` JSON — for a specific document's history, query
+`document_custody_events`, not `audit_log`.
 - `log_id` (PK)
 - `case_id` (FK, nullable)
-- `event_type` — ingest / export / edit / delete / ocr_run
+- `event_type` — export / edit / delete / requirement_change / conflict_flagged / backup
 - `entity_type`, `entity_id`
 - `actor`
 - `timestamp`
@@ -338,19 +438,25 @@ An FTS5 virtual table (`document_text_fts`) indexes `document_pages`
 ```
 document_types, event_types, fact_types  (lookup tables — extensibility)
 
+document_version_groups ─(current_document_id)─► documents
+
 cases ─┬─ documents ─┬─ document_pages ─┬─ citations ─┬─ verified_fact_citations ─ verified_facts ─┬─ timeline_event_facts ─ timeline_events
-       │              │                  │             └─ ai_observation_citations ─ ai_observations   ├─ conflict_facts ─ conflicts
-       │              │                  │                      (never read directly by timeline/       └─ binder_export_sources ─ binder_sections ─ binder_exports
-       │              │                  │                       conflicts/binder; only via promotion
-       │              │                  │                       into verified_facts, with lineage)
-       │              │                  └─ document_text_fts (search index)
-       │              ├─ document_tags ─ tags
-       │              ├─ document_people ─ people
-       │              ├─ document_metadata (EAV, extensibility)
-       │              ├─ ocr_jobs
-       │              └─ summary_source_documents ─ ai_summaries
+       │      ▲       │                  │             └─ ai_observation_citations ─ ai_observations   ├─ conflict_facts ─ conflicts
+       │      │       │                  │                      (never read directly by timeline/       └─ binder_export_sources ─ binder_sections ─ binder_exports
+       │      │       │                  │                       conflicts/binder; only via promotion
+       │      │       │                  │                       into verified_facts, with lineage)
+       │      │       │                  └─ document_text_fts (search index)
+       │      │       ├─ document_tags ─ tags
+       │      │       ├─ document_people ─ people
+       │      │       ├─ document_metadata (EAV, extensibility)
+       │      │       ├─ document_custody_events (chain of custody, append-only)
+       │      │       └─ ocr_jobs
+       │      └─ supersedes_document_id (self-referential — prior version chain)
+       │
+       ├─ document_version_groups
        ├─ record_requirements
-       └─ audit_log
+       ├─ summary_source_documents ─ ai_summaries
+       └─ audit_log (case/system-level activity; document activity lives in document_custody_events)
 ```
 
 Note the two structurally distinct paths out of `citations`: one through

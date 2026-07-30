@@ -12,11 +12,20 @@ No code.
 **Phase 1 — Foundations**
 Repo scaffolding (`pyproject.toml`, app skeleton per ARCHITECTURE.md folder
 structure); vault creation/config (`init_vault.py`, startup guardrail
-against vault-inside-git-repo); DB schema + first Alembic migration; case
-CRUD; basic ingestion (copy-in, SHA-256 hashing, read-only flag, dedup by
-hash); minimal web UI to create a case and list/view ingested documents.
+against vault-inside-git-repo); DB schema + first Alembic migration
+(including `document_version_groups` and `document_custody_events` from the
+start, since chain-of-custody begins at import — not deferred to a later
+phase); case CRUD; basic ingestion (copy-in, SHA-256 hashing, read-only
+flag, dedup by hash, `imported` custody event written in the same
+transaction as the document row); a "link as new version" action from a
+document's detail view; minimal web UI to create a case, list/view ingested
+documents, view a document's custody history, and see version history where
+applicable.
 *Exit criteria: you can create a case, drop in files, and see them listed
-with correct hashes and read-only originals on disk.*
+with correct hashes and read-only originals on disk; every document shows
+its custody log from the moment of import; importing a corrected version of
+an existing document preserves the original untouched and clearly marks
+which one is current.*
 
 **Phase 2 — Extraction & Search**
 Per-format text extractors (PDF, DOCX, plain text, email); page-level
@@ -158,6 +167,16 @@ decide now than to change after real case data exists):
     (e.g. date-parsing) to be treated as deterministic/native extraction
     rather than routed through the observation-review workflow at all. This
     changes how much review-queue UI Phase 3.5 actually needs for v1.
+
+12. **Version-linking UX.** Confirmed direction: linking two documents as
+    versions of each other is always a manual, user-driven action (see
+    DATA_MODEL.md `document_version_groups`) — the app does not auto-detect
+    "this looks like a new version of that." Worth deciding now whether v1
+    should also offer a *suggestion* (e.g., "this new import has the same
+    document type and a similar filename/date to an existing document —
+    link as a new version?") as a Phase 3.5-style `ai_observations` row the
+    user can accept or dismiss, or whether that's unnecessary complexity for
+    v1 and purely manual linking is enough to start.
 
 ## Risks
 
