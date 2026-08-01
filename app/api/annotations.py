@@ -1,13 +1,18 @@
-"""Document viewer + annotation routes: highlights, notes, bookmarks.
+"""Document viewer + annotation routes: highlights, notes, bookmarks, and
+notes search.
 
 See docs/PHASE_2_PLAN.md §7/§13 Step 4. The viewer renders one page's
 extracted text at a time with lightweight text-offset highlighting (the
 approved v1 scope — not full PDF.js spatial rendering).
+
+The notes-search route (Step 5, §13) is a separate page from document text
+search (app/api/search.py) — deliberately not merged into the same results
+list; see app/core/indexing/notes_search.py.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -20,7 +25,8 @@ from app.core.annotations.service import (
     list_page_annotations,
     remove_annotation,
 )
-from app.db.models import Annotation, Document, DocumentPage
+from app.core.indexing.notes_search import search_case_annotation_notes
+from app.db.models import Annotation, Case, Document, DocumentPage
 
 router = APIRouter(tags=["annotations"])
 
@@ -30,6 +36,13 @@ def _get_document_or_404(db: Session, document_id: int) -> Document:
     if document is None:
         raise HTTPException(status_code=404, detail=f"Document {document_id} not found.")
     return document
+
+
+def _get_case_or_404(db: Session, case_id: int) -> Case:
+    case = db.get(Case, case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} not found.")
+    return case
 
 
 def _get_page_by_id_or_404(db: Session, page_id: int) -> DocumentPage:
@@ -165,3 +178,44 @@ def remove_annotation_route(
     remove_annotation(db, annotation, actor=actor)
     db.commit()
     return RedirectResponse(url=f"/documents/{document_id}/view?page={page}", status_code=303)
+
+
+@router.get("/cases/{case_id}/notes-search", response_class=HTMLResponse)
+def search_case_notes(
+    request: Request, case_id: int, q: str = Query(""), db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Render the notes-search form and, if a query is present, its results.
+
+    Searches only `annotations.body_text` (notes and bookmarks) — never
+    document text, and never mixed into the same result list as
+    /cases/{case_id}/search. See app/core/indexing/notes_search.py.
+    """
+    case = _get_case_or_404(db, case_id)
+
+    results = search_case_annotation_notes(db, case_id, q)
+
+    rows = []
+    for result in results:
+        document = db.get(Document, result.document_id)
+        page = db.get(DocumentPage, result.page_id) if result.page_id is not None else None
+        rows.append(
+            {
+                "annotation_type": result.annotation_type,
+                "snippet": result.snippet,
+                "document_id": result.document_id,
+                "original_filename": document.original_filename if document else None,
+                "page_number": page.page_number if page else None,
+            }
+        )
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "notes_search.html",
+        {
+            "case": case,
+            "query": q,
+            "results": rows,
+            "searched": bool(q.strip()),
+        },
+    )

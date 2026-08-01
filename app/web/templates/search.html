@@ -3,6 +3,13 @@
 {% block content %}
   <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
   <h1>Search {{ case.label }}</h1>
+  <p class="hint">
+    This searches extracted source document text only. To search your own
+    notes and bookmarks instead, use
+    <a href="/cases/{{ case.case_id }}/notes-search">notes search</a> — kept
+    separate so a result is never ambiguous about whether it's something
+    the evidence says or something you wrote.
+  </p>
 
   <section class="panel">
     <form method="get" action="/cases/{{ case.case_id }}/search">

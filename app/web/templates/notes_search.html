@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Search notes in {{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
+  <h1>Search your notes &amp; bookmarks in {{ case.label }}</h1>
+  <p class="hint">
+    This searches only the text of notes and bookmarks you've added — never
+    the source documents themselves. For source document text, use
+    <a href="/cases/{{ case.case_id }}/search">document search</a> instead;
+    the two are kept separate on purpose, so a result is never ambiguous
+    about whether it's something the evidence says or something you wrote.
+  </p>
+
+  <section class="panel">
+    <form method="get" action="/cases/{{ case.case_id }}/notes-search">
+      <label>
+        Search text
+        <input type="text" name="q" value="{{ query }}" placeholder="e.g. follow up, key date, question for advocate" required>
+      </label>
+      <button type="submit">Search</button>
+    </form>
+  </section>
+
+  {% if searched %}
+    <section class="panel">
+      <h2>Results ({{ results | length }})</h2>
+      {% if results %}
+        <table class="data-table">
+          <thead><tr><th>Type</th><th>Document</th><th>Excerpt</th></tr></thead>
+          <tbody>
+            {% for result in results %}
+              <tr>
+                <td>{{ result.annotation_type }}</td>
+                <td>
+                  <a href="/documents/{{ result.document_id }}/view{% if result.page_number %}?page={{ result.page_number }}{% endif %}">
+                    {{ result.original_filename or result.document_id }}
+                  </a>
+                </td>
+                <td>{{ result.snippet }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty-state">No matching notes or bookmarks found for this search.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

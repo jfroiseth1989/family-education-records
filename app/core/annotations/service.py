@@ -13,6 +13,10 @@ deliberate integrity choice, not just a convenience: the alternative
 (accepting a client-submitted quoted_text) would let a client-side bug,
 or a tampered request, record a citation whose text doesn't match its
 own document/page/offsets.
+
+Note/bookmark creation and removal also keep `annotation_notes_fts` (Step
+5, §13) in sync via explicit reindex calls -- see
+app/core/indexing/notes_search.py -- since that index has no triggers.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.custody import write_custody_event
+from app.core.indexing.notes_search import deindex_annotation_note, index_annotation_note
 from app.db.models import Annotation, AnnotationType, Citation, Document, DocumentPage
 
 
@@ -109,6 +114,7 @@ def create_note(
     )
     db.add(annotation)
     db.flush()
+    index_annotation_note(db, annotation)
 
     write_custody_event(
         db, document, event_type="annotated", actor=actor,
@@ -136,6 +142,7 @@ def create_bookmark(
     )
     db.add(annotation)
     db.flush()
+    index_annotation_note(db, annotation)
 
     write_custody_event(
         db, document, event_type="annotated", actor=actor,
@@ -157,6 +164,7 @@ def remove_annotation(db: Session, annotation: Annotation, actor: str) -> None:
         return
 
     annotation.deleted_at = datetime.now(timezone.utc)
+    deindex_annotation_note(db, annotation)
     write_custody_event(
         db, annotation.document, event_type="annotation_removed", actor=actor,
         details={
