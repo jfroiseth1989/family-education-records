@@ -20,7 +20,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import cases, documents
+from app.api import cases, documents, search
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
@@ -58,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(cases.router)
     app.include_router(documents.router)
+    app.include_router(search.router)
 
     @app.get("/")
     def root() -> RedirectResponse:

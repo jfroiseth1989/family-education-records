@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Search {{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
+  <h1>Search {{ case.label }}</h1>
+
+  <section class="panel">
+    <form method="get" action="/cases/{{ case.case_id }}/search">
+      <label>
+        Search text
+        <input type="text" name="q" value="{{ query }}" placeholder="e.g. evaluation, IEP meeting, transportation" required>
+      </label>
+      <label>
+        Record type
+        <select name="document_type_id">
+          <option value="">(any)</option>
+          {% for dt in document_types %}
+            <option value="{{ dt.type_id }}" {% if dt.type_id == selected_document_type_id %}selected{% endif %}>{{ dt.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Needs OCR
+        <select name="needs_ocr">
+          <option value="" {% if selected_needs_ocr == "" %}selected{% endif %}>(any)</option>
+          <option value="true" {% if selected_needs_ocr == "true" %}selected{% endif %}>Yes</option>
+          <option value="false" {% if selected_needs_ocr == "false" %}selected{% endif %}>No</option>
+        </select>
+      </label>
+      <label>
+        Document date from
+        <input type="date" name="date_from" value="{{ date_from }}">
+      </label>
+      <label>
+        Document date to
+        <input type="date" name="date_to" value="{{ date_to }}">
+      </label>
+      <p class="hint">
+        Date filters match a document's own date (see its detail page) —
+        including documents with a "range" date whose span overlaps the
+        window given here — not when it was ingested.
+      </p>
+      <button type="submit">Search</button>
+    </form>
+  </section>
+
+  {% if searched %}
+    <section class="panel">
+      <h2>Results ({{ results | length }})</h2>
+      {% if results %}
+        <table class="data-table">
+          <thead><tr><th>Document</th><th>Page</th><th>Excerpt</th></tr></thead>
+          <tbody>
+            {% for result in results %}
+              <tr>
+                <td><a href="/documents/{{ result.document_id }}">{{ result.original_filename }}</a></td>
+                <td>{{ result.page_number }}</td>
+                <td>{{ result.snippet }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty-state">No matches found for this search and filters.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}
