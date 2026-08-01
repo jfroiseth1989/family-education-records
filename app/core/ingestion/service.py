@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.custody import write_custody_event
-from app.core.document_dates import set_document_date
+from app.core.document_dates import set_document_date, validate_date_combination
 from app.core.files import compute_sha256, copy_into_vault, make_read_only
 from app.core.vault import VaultLayout
 from app.db.models import Case, Document, DocumentDatePrecision, DocumentDateSource
@@ -52,6 +52,7 @@ def ingest_document(
     mime_type: str | None = None,
     document_date: date | None = None,
     document_date_precision: DocumentDatePrecision = DocumentDatePrecision.EXACT,
+    document_date_range_end: date | None = None,
 ) -> Document:
     """Copy ``source_file_path`` into the vault and register it as a new document.
 
@@ -69,11 +70,20 @@ def ingest_document(
     recorded as "manual" — this is the only entry point for a document
     date in Phase 1; later phases may set ``DocumentDateSource.EXTRACTED``
     or ``FILE_METADATA`` through other code paths without changing this
-    function's contract.
+    function's contract. ``document_date_range_end`` is only meaningful
+    when ``document_date_precision`` is ``RANGE``; see
+    ``app.core.document_dates.set_document_date`` for validation rules —
+    a mismatched combination raises ``InvalidDateRangeError``.
 
     Does not commit; the caller controls the transaction boundary (this
     lets API layers batch a request into a single commit).
     """
+    # Validated up front, before any filesystem/database work, so an
+    # invalid date combination can't leave a file copied into the vault
+    # with no corresponding document row -- see
+    # app.core.document_dates.validate_date_combination.
+    validate_date_combination(document_date, document_date_precision, document_date_range_end)
+
     file_hash = compute_sha256(source_file_path)
     file_size = source_file_path.stat().st_size
 
@@ -109,6 +119,7 @@ def ingest_document(
         document_date,
         source=DocumentDateSource.MANUAL,
         precision=document_date_precision,
+        range_end=document_date_range_end,
     )
     db.add(document)
     db.flush()  # assigns document.document_id before the custody event references it

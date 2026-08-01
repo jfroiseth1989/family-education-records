@@ -181,7 +181,7 @@ def test_upload_with_approximate_document_date(client: TestClient, app: FastAPI)
         "iep.txt",
         b"content",
         document_date="2024-03-01",
-        document_date_approximate="true",
+        document_date_precision="approximate",
     )
     document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
 
@@ -189,6 +189,127 @@ def test_upload_with_approximate_document_date(client: TestClient, app: FastAPI)
         document = db.get(Document, document_id)
 
     assert document.document_date_precision == "approximate"
+
+
+def test_upload_with_range_document_date(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="range",
+        document_date_range_end="2024-03-15",
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+
+    assert document.document_date.strftime("%Y-%m-%d") == "2024-03-01"
+    assert document.document_date_range_end.strftime("%Y-%m-%d") == "2024-03-15"
+    assert document.document_date_precision == "range"
+    assert document.document_date_source == "manual"
+
+
+def test_upload_range_without_range_end_returns_400(client: TestClient):
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="range",
+    )
+    assert response.status_code == 400
+
+
+def test_upload_range_end_before_start_returns_400(client: TestClient):
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-15",
+        document_date_precision="range",
+        document_date_range_end="2024-03-01",
+    )
+    assert response.status_code == 400
+
+
+def test_upload_range_end_without_range_precision_returns_400(client: TestClient):
+    """A range end date given without precision=range is rejected, not
+    silently ignored -- see app.core.document_dates.validate_date_combination.
+    """
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="exact",
+        document_date_range_end="2024-03-15",
+    )
+    assert response.status_code == 400
+
+
+def test_upload_invalid_range_end_format_returns_400(client: TestClient):
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="range",
+        document_date_range_end="not-a-date",
+    )
+    assert response.status_code == 400
+
+
+def test_upload_invalid_precision_returns_400(client: TestClient):
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="sometime",
+    )
+    assert response.status_code == 400
+
+
+def test_range_upload_does_not_orphan_a_file_in_the_vault(client: TestClient, app: FastAPI):
+    """An invalid date combination must be rejected before the file is
+    copied into the vault -- otherwise a rejected upload would leave a
+    read-only file on disk with no corresponding document row. See
+    app/core/ingestion/service.py's upfront validate_date_combination call.
+    """
+    case_id = _create_case(client)
+    response = _upload(
+        client,
+        case_id,
+        "orphan-check.txt",
+        b"should not be stored",
+        document_date="2024-03-01",
+        document_date_precision="range",  # missing range_end -> rejected
+    )
+    assert response.status_code == 400
+
+    with app.state.session_factory() as db:
+        documents = db.scalars(select(Document).where(Document.case_id == case_id)).all()
+    assert documents == []
+
+    vault = app.state.vault
+    case_dir = vault.cases_dir / f"{case_id}-doc-test-case"
+    originals_dir = case_dir / "originals"
+    stored_files = list(originals_dir.rglob("*")) if originals_dir.exists() else []
+    assert stored_files == []
 
 
 def test_upload_with_invalid_document_date_returns_400(client: TestClient):
@@ -263,3 +384,26 @@ def test_new_version_can_have_its_own_document_date(client: TestClient, app: Fas
         doc_v2 = db.get(Document, v2_id)
 
     assert doc_v2.document_date.strftime("%Y-%m-%d") == "2024-02-20"
+
+
+def test_range_date_renders_on_detail_and_list_pages(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_precision="range",
+        document_date_range_end="2024-03-15",
+    )
+    detail_url = upload_response.headers["location"]
+
+    detail_response = client.get(detail_url)
+    assert "2024-03-01" in detail_response.text
+    assert "2024-03-15" in detail_response.text
+    assert "range" in detail_response.text.lower()
+
+    list_response = client.get(f"/cases/{case_id}")
+    assert "2024-03-01" in list_response.text
+    assert "2024-03-15" in list_response.text

@@ -23,8 +23,15 @@
         <th>Document date</th>
         <td>
           {% if document.document_date %}
-            {{ document.document_date.strftime("%Y-%m-%d") }}
-            ({{ document.document_date_precision }}, source: {{ document.document_date_source }})
+            {% if document.document_date_precision == "range" %}
+              {{ document.document_date.strftime("%Y-%m-%d") }}
+              &ndash;
+              {{ document.document_date_range_end.strftime("%Y-%m-%d") if document.document_date_range_end else "?" }}
+              (range, source: {{ document.document_date_source }})
+            {% else %}
+              {{ document.document_date.strftime("%Y-%m-%d") }}
+              ({{ document.document_date_precision }}, source: {{ document.document_date_source }})
+            {% endif %}
           {% else %}
             Unknown / not recorded
           {% endif %}
@@ -98,14 +105,23 @@
           Document date (of this new version)
           <input type="date" name="document_date">
         </label>
-        <label class="checkbox-label">
-          <input type="checkbox" name="document_date_approximate" value="true">
-          Date is approximate
+        <label>
+          Date precision
+          <select name="document_date_precision">
+            <option value="exact" selected>Exact</option>
+            <option value="approximate">Approximate</option>
+            <option value="range">Range (e.g. "sometime in March 2024")</option>
+          </select>
+        </label>
+        <label>
+          Range end date (only if precision is "Range")
+          <input type="date" name="document_date_range_end">
         </label>
         <p class="hint">
           Entered fresh for this version, not copied from the prior one —
           a reissued or corrected record often has its own new date. Leave
-          blank if unknown.
+          blank if unknown. For a range, "Document date" above is the
+          range's start and "Range end date" is its end.
         </p>
         <button type="submit">Ingest as new version</button>
       </form>

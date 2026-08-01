@@ -87,14 +87,20 @@ class DocumentDateSource(str, enum.Enum):
 class DocumentDatePrecision(str, enum.Enum):
     """How precisely `Document.document_date` is known.
 
-    RANGE is deliberately not included: representing a date range would
-    need a second column (e.g. a range end), which isn't part of this
-    change — see docs/PHASE_1_REVIEW.md item 4 decision log. Add it later
-    if a real need for range dates shows up.
+    RANGE represents a genuine date span (e.g. "sometime in March 2024," a
+    triennial evaluation window) rather than a single day — special
+    education records routinely carry dates like this. When precision is
+    RANGE, `Document.document_date` holds the range's start and
+    `Document.document_date_range_end` holds its end; for EXACT or
+    APPROXIMATE, `document_date_range_end` is always null. This is a
+    reusable pattern — see docs/DATA_MODEL.md "Date representation
+    pattern" — intended for any future date-bearing table (e.g.
+    `timeline_events` in Phase 4), not something reinvented per table.
     """
 
     EXACT = "exact"
     APPROXIMATE = "approximate"
+    RANGE = "range"
 
 
 class Case(Base):
@@ -218,6 +224,11 @@ class Document(Base):
     )
 
     document_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Only meaningful when document_date_precision == "range"; null
+    # otherwise. See DocumentDatePrecision.RANGE docstring.
+    document_date_range_end: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     document_date_precision: Mapped[str | None] = mapped_column(String(20), nullable=True)

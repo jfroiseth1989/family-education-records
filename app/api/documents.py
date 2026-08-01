@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_actor, get_db, get_vault
 from app.core.custody import verify_document_integrity
+from app.core.document_dates import InvalidDateRangeError
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
 from app.core.vault import VaultLayout
@@ -54,26 +55,44 @@ def _save_upload_to_temp(upload: UploadFile) -> Path:
 
 
 def _parse_document_date_form(
-    document_date_raw: str, approximate: bool
-) -> tuple[date | None, DocumentDatePrecision]:
-    """Parse the ingestion form's optional date field.
+    document_date_raw: str, precision_raw: str, range_end_raw: str
+) -> tuple[date | None, DocumentDatePrecision, date | None]:
+    """Parse the ingestion form's date fields: date, precision, range end.
 
-    An empty string means "unknown/unavailable" -- a fully valid choice,
-    not an error -- and is returned as ``None``. A non-empty value that
-    isn't a valid ``YYYY-MM-DD`` date (the format an HTML `<input
-    type="date">` submits) is rejected with a 400 rather than silently
-    ignored, so a typo doesn't quietly discard the date the user entered.
+    Each of the three fields is validated independently here (format only
+    -- an empty date/range-end means "unknown/not applicable," a fully
+    valid choice, and an unparseable non-empty value or unrecognized
+    precision is rejected with a 400 rather than silently ignored).
+    Cross-field validation (e.g. "range" precision requires a range end,
+    exact/approximate must not have one, range end must not precede the
+    start) happens later, inside `ingest_document` via
+    `app.core.document_dates.validate_date_combination`, and is surfaced
+    to the caller as `InvalidDateRangeError` -> 400 (see both routes below).
     """
-    precision = DocumentDatePrecision.APPROXIMATE if approximate else DocumentDatePrecision.EXACT
-    value = document_date_raw.strip()
-    if not value:
-        return None, precision
     try:
-        return date.fromisoformat(value), precision
+        precision = DocumentDatePrecision(precision_raw)
     except ValueError as exc:
         raise HTTPException(
-            status_code=400, detail=f"Invalid document date '{value}' (expected YYYY-MM-DD)."
+            status_code=400,
+            detail=f"Invalid document date precision '{precision_raw}'.",
         ) from exc
+
+    def _parse_optional_date(raw: str, field_label: str) -> date | None:
+        value = raw.strip()
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {field_label} '{value}' (expected YYYY-MM-DD).",
+            ) from exc
+
+    parsed_date = _parse_optional_date(document_date_raw, "document date")
+    parsed_range_end = _parse_optional_date(range_end_raw, "document date range end")
+
+    return parsed_date, precision, parsed_range_end
 
 
 @router.post("/cases/{case_id}/documents")
@@ -85,7 +104,8 @@ def upload_document(
     document_type_id: str = Form(""),
     notes: str = Form(""),
     document_date: str = Form(""),
-    document_date_approximate: bool = Form(False),
+    document_date_precision: str = Form("exact"),
+    document_date_range_end: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -97,8 +117,8 @@ def upload_document(
         raise HTTPException(status_code=400, detail="A file is required.")
 
     parsed_type_id = int(document_type_id) if document_type_id.strip() else None
-    parsed_date, date_precision = _parse_document_date_form(
-        document_date, document_date_approximate
+    parsed_date, date_precision, parsed_range_end = _parse_document_date_form(
+        document_date, document_date_precision, document_date_range_end
     )
 
     temp_path = _save_upload_to_temp(file)
@@ -117,10 +137,14 @@ def upload_document(
                 mime_type=file.content_type,
                 document_date=parsed_date,
                 document_date_precision=date_precision,
+                document_date_range_end=parsed_range_end,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except InvalidDateRangeError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         db.commit()
     finally:
@@ -213,7 +237,8 @@ def upload_new_version(
     file: UploadFile,
     version_note: str = Form(""),
     document_date: str = Form(""),
-    document_date_approximate: bool = Form(False),
+    document_date_precision: str = Form("exact"),
+    document_date_range_end: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -236,8 +261,8 @@ def upload_new_version(
     if not file.filename:
         raise HTTPException(status_code=400, detail="A file is required.")
 
-    parsed_date, date_precision = _parse_document_date_form(
-        document_date, document_date_approximate
+    parsed_date, date_precision, parsed_range_end = _parse_document_date_form(
+        document_date, document_date_precision, document_date_range_end
     )
 
     temp_path = _save_upload_to_temp(file)
@@ -255,10 +280,14 @@ def upload_new_version(
                 mime_type=file.content_type,
                 document_date=parsed_date,
                 document_date_precision=date_precision,
+                document_date_range_end=parsed_range_end,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except InvalidDateRangeError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
             link_as_new_version(
