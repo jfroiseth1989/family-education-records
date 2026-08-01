@@ -8,14 +8,13 @@ defined in a hand-written migration, not here, see
 app/db/migrations/versions/08c778ee32af_*.py; case-scoped tags — Step 3;
 `annotation_types`/`annotations` — Step 4; `annotation_notes_fts` — Step 5,
 also hand-written, see app/db/migrations/versions/d93ac0658fac_*.py) plus
-Phase 3 Steps 0-1 (`ocr_jobs` — job-queue infrastructure, Step 0;
+Phase 3 Steps 0-3 (`ocr_jobs` — job-queue infrastructure, Step 0;
 `citations.text_source`/`source_confidence`, `document_pages.
-ocr_word_boxes`, and `ocr_text_history` — OCR execution core, Step 1).
-`ocr_corrections` (the correction layer) is a later Phase 3 step, not
-built yet. See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3
-schema and step breakdown. Tables for later Phase 3 steps and later
-phases (facts/observations, the relationship graph, etc.) are
-intentionally not created yet.
+ocr_word_boxes`, and `ocr_text_history` — OCR execution core, Step 1;
+`ocr_corrections` — correction layer, Step 3; Step 2 added no schema).
+See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3 schema and
+step breakdown. Tables for later phases (facts/observations, the
+relationship graph, etc.) are intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
 the lookup-table / EAV-metadata extensibility design in that document is
@@ -64,6 +63,10 @@ before implementation began:
   - `ocr_text_history`          — append-only archive of superseded raw
                                   OCR text (Phase 3 Step 1) — see the
                                   OcrTextHistory docstring.
+  - `ocr_corrections`           — append-only human corrections to OCR
+                                  text (Phase 3 Step 3). Never overwrites
+                                  `document_pages.ocr_text` — see the
+                                  OcrCorrection docstring.
 """
 
 from __future__ import annotations
@@ -422,6 +425,12 @@ class DocumentPage(Base):
     source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
 
     document: Mapped["Document"] = relationship(back_populates="pages")
+    # Ordered oldest-first so `corrections[-1]` is always the current
+    # (most recent) correction -- see effective_text() in
+    # app/core/ocr/text.py, the only place this ordering is relied on.
+    corrections: Mapped[list["OcrCorrection"]] = relationship(
+        back_populates="page", order_by="OcrCorrection.corrected_at"
+    )
 
 
 class Citation(Base):
@@ -668,6 +677,40 @@ class OcrTextHistory(Base):
 
     page: Mapped["DocumentPage"] = relationship()
     superseded_by_job: Mapped["OcrJob | None"] = relationship()
+
+
+class OcrCorrection(Base):
+    """A human correction to a page's OCR text (Phase 3 Step 3).
+
+    See docs/PHASE_3_IMPLEMENTATION_PLAN.md §2/§3 and
+    docs/PHASE_3_DECISIONS.md §1/§5/§9.3. Append-only -- written by
+    `app/core/ocr/corrections.py::create_ocr_correction()`, never updated
+    or deleted. `document_pages.ocr_text` (the raw OCR output) is never
+    touched by a correction -- `docs/PRIVACY_SECURITY.md` §3 locks this:
+    "OCR corrections are stored as a separate ... layer, never as an
+    overwrite of the original OCR output." A page can have many
+    corrections over time; there is no `is_current` flag or
+    `previous_correction_id` chain -- "the current correction" is simply
+    the most recent row for a page, resolved by ordering
+    (`DocumentPage.corrections`, see that relationship), never a
+    maintained pointer. `app/core/ocr/text.py::effective_text()` is the
+    only place that resolution happens.
+    """
+
+    __tablename__ = "ocr_corrections"
+
+    correction_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    page_id: Mapped[int] = mapped_column(
+        ForeignKey("document_pages.page_id"), nullable=False
+    )
+
+    corrected_text: Mapped[str] = mapped_column(Text, nullable=False)
+    corrected_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    corrected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    page: Mapped["DocumentPage"] = relationship(back_populates="corrections")
 
 
 class AuditLog(Base):

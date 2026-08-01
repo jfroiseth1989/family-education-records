@@ -14,6 +14,14 @@ provenance badge (native vs. OCR) per result, per
 docs/PHASE_3_IMPLEMENTATION_PLAN.md §8. Verified this needed no change to
 `document_text_fts` itself or its sync triggers -- those already cover
 `ocr_text` since Phase 2 Step 2 (see tests/test_ocr_search_integration.py).
+
+`reindex_page_ocr_text()` (Phase 3 Step 3) is the one exception to
+"triggers handle all of document_text_fts's syncing" -- a correction
+(app/core/ocr/corrections.py) needs the *search index* to reflect the
+corrected text without ever touching `document_pages.ocr_text` itself
+(docs/PRIVACY_SECURITY.md §3 locks raw OCR output as never-overwritten).
+Extends Step 5's proven "explicit reindex, no trigger" pattern
+(app/core/indexing/notes_search.py) to this table for this one case.
 """
 
 from __future__ import annotations
@@ -118,6 +126,46 @@ def search_case_documents(
         )
         for row in rows
     ]
+
+
+def reindex_page_ocr_text(
+    db: Session, page_id: int, *, extracted_text: str | None, previous_ocr_value: str | None, new_ocr_value: str | None
+) -> None:
+    """Explicitly override `document_text_fts`'s indexed `ocr_text` value
+    for one page, without touching `document_pages.ocr_text` itself.
+
+    ``previous_ocr_value`` must be exactly what's *currently* indexed for
+    this page's `ocr_text` column -- FTS5's external-content `'delete'`
+    command needs the value it's removing to correctly locate that
+    value's terms in the index. This is **not** always
+    `document_pages.ocr_text` (the real column, permanently raw): after a
+    first correction, what's currently indexed is that correction's text,
+    not the raw OCR text underneath it. The caller
+    (app/core/ocr/corrections.py::create_ocr_correction) is responsible
+    for passing whatever `effective_text()` resolved to *immediately
+    before* this call, which is exactly the previously-indexed value by
+    construction, however many corrections deep.
+
+    ``extracted_text`` is passed through unchanged on both the delete and
+    insert steps -- native text is never affected by a correction, and
+    native/OCR are mutually exclusive per page, so this is always
+    whatever `document_pages.extracted_text` already is (typically
+    `None`, for a page that needed OCR at all).
+    """
+    db.execute(
+        text(
+            "INSERT INTO document_text_fts(document_text_fts, rowid, extracted_text, ocr_text) "
+            "VALUES ('delete', :rowid, :extracted_text, :previous_ocr)"
+        ),
+        {"rowid": page_id, "extracted_text": extracted_text, "previous_ocr": previous_ocr_value},
+    )
+    db.execute(
+        text(
+            "INSERT INTO document_text_fts(rowid, extracted_text, ocr_text) "
+            "VALUES (:rowid, :extracted_text, :new_ocr)"
+        ),
+        {"rowid": page_id, "extracted_text": extracted_text, "new_ocr": new_ocr_value},
+    )
 
 
 def _quote_as_phrase(query: str) -> str:

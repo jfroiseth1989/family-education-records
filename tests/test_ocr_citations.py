@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.annotations.service import InvalidHighlightRangeError, create_highlight
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import ingest_document
+from app.core.ocr.corrections import create_ocr_correction
 from app.core.ocr.engine import OcrResult
 from app.core.ocr.queue import enqueue_ocr_job
 from app.core.vault import VaultLayout
@@ -134,3 +135,82 @@ def test_native_highlight_still_gets_text_source_native(
     assert citation.quoted_text == "Native"
     assert citation.text_source == "native"
     assert citation.source_confidence is None
+
+
+# --- immutability regression (Phase 3 Step 3, docs/PHASE_3_DECISIONS.md §9.2) ---
+
+
+def test_correction_never_retroactively_changes_an_existing_citation(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    """The single most important regression test in this file: a citation
+    describes what was quoted *at the time it was made*, permanently --
+    a correction made afterward must never change it.
+    """
+    document, page = _ocr_an_image_document(
+        db_session, vault, sample_case, tmp_path, "orignal msspelled text here", 55.0
+    )
+
+    pre_correction = create_highlight(db_session, document, page, 0, 8, actor="test-user")
+    db_session.commit()
+    pre_citation_id = pre_correction.citation_id
+    pre_citation = db_session.get(Citation, pre_citation_id)
+    assert pre_citation.quoted_text == "orignal "
+    assert pre_citation.text_source == "ocr_raw"
+    assert pre_citation.source_confidence == 55.0
+
+    create_ocr_correction(db_session, page, "original misspelled text here", actor="corrector")
+    db_session.commit()
+
+    # Re-fetch fresh from the DB -- not just checking the same in-memory
+    # object was never mutated, but that nothing was ever persisted either.
+    db_session.expire(pre_citation)
+    reloaded = db_session.get(Citation, pre_citation_id)
+    assert reloaded.quoted_text == "orignal "
+    assert reloaded.text_source == "ocr_raw"
+    assert reloaded.source_confidence == 55.0
+
+
+def test_highlight_created_after_correction_cites_the_corrected_text(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    document, page = _ocr_an_image_document(
+        db_session, vault, sample_case, tmp_path, "orignal msspelled text here", 55.0
+    )
+
+    create_ocr_correction(db_session, page, "original misspelled text here", actor="corrector")
+    db_session.commit()
+
+    post_correction = create_highlight(db_session, document, page, 0, 8, actor="test-user")
+    db_session.commit()
+
+    post_citation = db_session.get(Citation, post_correction.citation_id)
+    assert post_citation.quoted_text == "original"
+    assert post_citation.text_source == "ocr_corrected"
+    # Confidence still reflects the underlying OCR run, not a new concept.
+    assert post_citation.source_confidence == 55.0
+
+
+def test_two_citations_on_same_page_can_have_different_text_sources(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    """Not an inconsistency -- each citation accurately reflects what was
+    quoted at its own moment in time.
+    """
+    document, page = _ocr_an_image_document(
+        db_session, vault, sample_case, tmp_path, "orignal msspelled text here", 55.0
+    )
+
+    before = create_highlight(db_session, document, page, 0, 8, actor="test-user")
+    db_session.commit()
+
+    create_ocr_correction(db_session, page, "original misspelled text here", actor="corrector")
+    db_session.commit()
+
+    after = create_highlight(db_session, document, page, 0, 8, actor="test-user")
+    db_session.commit()
+
+    before_citation = db_session.get(Citation, before.citation_id)
+    after_citation = db_session.get(Citation, after.citation_id)
+    assert before_citation.text_source == "ocr_raw"
+    assert after_citation.text_source == "ocr_corrected"

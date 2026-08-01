@@ -1,13 +1,13 @@
 """Tests for app/core/ocr/text.py -- effective_text() resolution.
 
-Step 1 scope: native and raw-OCR branches only (the correction branch is
-added in Step 3, once ocr_corrections exists) -- see the module docstring.
+Native, raw-OCR, and (Phase 3 Step 3) correction branches -- see the
+module docstring.
 """
 
 from __future__ import annotations
 
-from app.core.ocr.text import NATIVE, OCR_RAW, effective_text
-from app.db.models import DocumentPage
+from app.core.ocr.text import NATIVE, OCR_CORRECTED, OCR_RAW, effective_text
+from app.db.models import DocumentPage, OcrCorrection
 
 
 def _page(**overrides) -> DocumentPage:
@@ -69,3 +69,39 @@ def test_effective_text_treats_empty_string_as_absent():
     result = effective_text(page)
 
     assert result.text is None
+
+
+# --- correction branch (Phase 3 Step 3) -----------------------------------
+
+
+def test_effective_text_prefers_correction_over_raw_ocr():
+    page = _page(ocr_text="raw ocr guess", extraction_confidence=60.0)
+    page.corrections.append(OcrCorrection(page_id=1, corrected_text="human-corrected text", corrected_by="tester"))
+
+    result = effective_text(page)
+
+    assert result.text == "human-corrected text"
+    assert result.source == OCR_CORRECTED
+
+
+def test_effective_text_correction_confidence_reflects_underlying_ocr_run():
+    """A correction has no confidence score of its own -- the value
+    carried forward is the underlying OCR run's confidence, useful
+    context about what a human was correcting, not a new concept.
+    """
+    page = _page(ocr_text="raw ocr guess", extraction_confidence=42.0)
+    page.corrections.append(OcrCorrection(page_id=1, corrected_text="corrected", corrected_by="tester"))
+
+    result = effective_text(page)
+
+    assert result.confidence == 42.0
+
+
+def test_effective_text_uses_the_latest_of_multiple_corrections():
+    page = _page(ocr_text="raw ocr guess")
+    page.corrections.append(OcrCorrection(page_id=1, corrected_text="first correction", corrected_by="c1"))
+    page.corrections.append(OcrCorrection(page_id=1, corrected_text="second correction", corrected_by="c2"))
+
+    result = effective_text(page)
+
+    assert result.text == "second correction"
