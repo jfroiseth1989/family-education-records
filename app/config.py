@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # display name for chain-of-custody / audit log entries.
     actor_name: str = ""
 
+    # Starts the background OCR job worker (Phase 3 Step 0,
+    # app/jobs/worker.py) at app startup. Defaults on for real use
+    # (scripts/start.sh). The test suite's `settings` fixture
+    # (tests/conftest.py) explicitly sets this False so 240+ tests don't
+    # each spin up a real background thread against a throwaway vault —
+    # tests exercise the worker's job-processing logic directly and
+    # synchronously instead. See app/jobs/worker.py's module docstring.
+    enable_background_worker: bool = True
+
     def resolved_actor_name(self) -> str:
         """Return the configured actor name, or fall back to the OS username."""
         return self.actor_name or _default_actor_name()

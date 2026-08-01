@@ -20,13 +20,25 @@ def make_engine(db_path: Path) -> Engine:
     to on every connection — without this, the integrity guarantees
     designed into the schema (e.g. a custody event always referencing a
     real document) would be silently unenforced.
+
+    Also enables WAL journal mode and a busy timeout — required starting
+    Phase 3 Step 0, which introduces this app's first background thread
+    (the OCR job worker, app/jobs/worker.py) reading/writing the same
+    SQLite file concurrently with request-handling threads. Every prior
+    phase was single-threaded against the database, so this condition
+    never existed before. WAL lets readers proceed while a writer is
+    active instead of blocking; the busy timeout makes any residual lock
+    contention retry-wait briefly rather than immediately raising
+    "database is locked".
     """
     engine = create_engine(f"sqlite:///{db_path}", future=True)
 
     @event.listens_for(engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, connection_record):  # noqa: ANN001
+    def _configure_connection(dbapi_connection, connection_record):  # noqa: ANN001
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     return engine

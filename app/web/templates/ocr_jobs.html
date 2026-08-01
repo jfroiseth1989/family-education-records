@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}OCR jobs — {{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
+  <h1>OCR jobs — {{ case.label }}</h1>
+  <p class="hint">
+    A document is queued here automatically after upload if extraction
+    found any page needing OCR. Jobs are processed one at a time in the
+    background — this page reflects their current status, most recent
+    first.
+  </p>
+
+  <section class="panel">
+    {% if jobs %}
+      <table class="data-table">
+        <thead><tr><th>Document</th><th>Status</th><th>Queued</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>
+        <tbody>
+          {% for job in jobs %}
+            <tr>
+              <td><a href="/documents/{{ job.document_id }}">{{ job.document.original_filename }}</a></td>
+              <td>
+                {% if job.status == "completed" %}
+                  <span class="status-badge status-current">Completed</span>
+                {% elif job.status == "completed_with_errors" %}
+                  <span class="status-badge status-needs-ocr">Completed with errors</span>
+                {% elif job.status == "failed" %}
+                  <span class="status-badge status-failed">Failed</span>
+                {% elif job.status == "running" %}
+                  <span class="status-badge">Running</span>
+                {% else %}
+                  <span class="status-badge">Queued</span>
+                {% endif %}
+              </td>
+              <td>{{ job.queued_at }}</td>
+              <td>{{ job.started_at or "—" }}</td>
+              <td>{{ job.finished_at or "—" }}</td>
+              <td>{{ job.error or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No OCR jobs for this case yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}

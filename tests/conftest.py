@@ -29,7 +29,12 @@ def vault_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def settings(vault_path: Path) -> Settings:
-    return Settings(vault_path=vault_path, actor_name="test-user")
+    # enable_background_worker=False: tests exercise the OCR job queue's
+    # processing logic directly and synchronously (app/jobs/worker.py's
+    # process_next_job) rather than via a real background thread, so the
+    # 240+ tests using this fixture don't each spin up one against a
+    # throwaway vault. See app/config.py's Settings.enable_background_worker.
+    return Settings(vault_path=vault_path, actor_name="test-user", enable_background_worker=False)
 
 
 @pytest.fixture

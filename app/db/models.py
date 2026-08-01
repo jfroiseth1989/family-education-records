@@ -1,14 +1,19 @@
 """SQLAlchemy ORM models.
 
-Scope note: implements the tables built through Phase 2 Step 4 — case
-management, document ingestion, version tracking, chain of custody
-(Phase 1); extraction status and the `document_pages`/`citations`
-traceability primitives (Step 1); the `document_text_fts` search index
-(Step 2, defined in a hand-written migration, not here — see
-app/db/migrations/versions/08c778ee32af_*.py); case-scoped tags (Step 3);
-and `annotation_types`/`annotations` (Step 4). Tables for later phases
-(OCR text population, facts/observations, the relationship graph,
-`annotation_notes_fts`, etc.) are intentionally not created yet.
+Scope note: implements the tables built through Phase 2 (case management,
+document ingestion, version tracking, chain of custody — Phase 1;
+extraction status and the `document_pages`/`citations` traceability
+primitives — Step 1; the `document_text_fts` search index — Step 2,
+defined in a hand-written migration, not here, see
+app/db/migrations/versions/08c778ee32af_*.py; case-scoped tags — Step 3;
+`annotation_types`/`annotations` — Step 4; `annotation_notes_fts` — Step 5,
+also hand-written, see app/db/migrations/versions/d93ac0658fac_*.py) plus
+Phase 3 Step 0 (`ocr_jobs` — job-queue infrastructure only; no OCR
+execution, no `ocr_text_history`/`ocr_corrections` yet, those are later
+Phase 3 steps). See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full
+Phase 3 schema and step breakdown. Tables for later Phase 3 steps and
+later phases (facts/observations, the relationship graph, etc.) are
+intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
 the lookup-table / EAV-metadata extensibility design in that document is
@@ -47,6 +52,10 @@ before implementation began:
                                   Step 4). A highlight always creates a
                                   `citations` row too — see the Annotation
                                   docstring.
+  - `ocr_jobs`                  — job-queue infrastructure for OCR
+                                  execution (Phase 3 Step 0). Not yet
+                                  written to by any real OCR code — see
+                                  the OcrJob docstring.
 """
 
 from __future__ import annotations
@@ -540,6 +549,47 @@ class Annotation(Base):
     page: Mapped["DocumentPage | None"] = relationship()
     citation: Mapped["Citation | None"] = relationship()
     annotation_type: Mapped["AnnotationType"] = relationship()
+
+
+class OcrJob(Base):
+    """One row per OCR run of one document (Phase 3 Step 0).
+
+    See docs/PHASE_3_IMPLEMENTATION_PLAN.md §2. Unlike every other new
+    table added in this application so far, this one is **not**
+    append-only -- a job's own lifecycle (`queued` -> `running` ->
+    `completed`/`completed_with_errors`/`failed`) is inherently a single
+    evolving record, updated in place by the worker as that one run
+    progresses, not a ledger of many rows. Historical OCR content itself
+    (raw text superseded by a later run, corrections) lives in separate,
+    genuinely append-only tables (`ocr_text_history`, `ocr_corrections`,
+    both added in later steps) -- this table only ever tracks *job*
+    status, not text content.
+
+    Step 0 only ever writes/updates this table via a temporary placeholder
+    processor that proves the queue mechanics work (see
+    app/jobs/worker.py) -- no real OCR execution exists yet.
+    """
+
+    __tablename__ = "ocr_jobs"
+
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=False
+    )
+
+    # queued / running / completed / completed_with_errors / failed
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="queued", server_default="queued"
+    )
+    engine: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    document: Mapped["Document"] = relationship()
 
 
 class AuditLog(Base):

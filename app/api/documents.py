@@ -22,6 +22,7 @@ from app.core.document_dates import InvalidDateRangeError
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
+from app.core.ocr.queue import enqueue_ocr_job
 from app.core.tagging import list_case_tags
 from app.core.vault import VaultLayout
 from app.db.models import Case, Document, DocumentDatePrecision
@@ -41,6 +42,17 @@ def _get_document_or_404(db: Session, document_id: int) -> Document:
     if document is None:
         raise HTTPException(status_code=404, detail=f"Document {document_id} not found.")
     return document
+
+
+def _maybe_enqueue_ocr(db: Session, document: Document, actor: str) -> None:
+    """Queue `document` for OCR if extraction flagged any page as needing it.
+
+    Runs right after `extract_document()`, in the same request — enqueuing
+    itself is cheap (one row, no OCR execution), unlike OCR itself, which
+    runs in the background (see app/jobs/worker.py).
+    """
+    if document.needs_ocr:
+        enqueue_ocr_job(db, document, actor)
 
 
 def _save_upload_to_temp(upload: UploadFile) -> Path:
@@ -154,6 +166,7 @@ def upload_document(
         # unsupported file is recorded via extraction_status/extraction_error
         # on the document itself (approved decision 6), not an exception.
         extract_document(db, vault, document, actor)
+        _maybe_enqueue_ocr(db, document, actor)
 
         db.commit()
     finally:
@@ -307,6 +320,7 @@ def upload_new_version(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         extract_document(db, vault, new_document, actor)
+        _maybe_enqueue_ocr(db, new_document, actor)
 
         try:
             link_as_new_version(

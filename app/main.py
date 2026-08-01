@@ -4,15 +4,17 @@ Binds only to ``127.0.0.1`` by default — see docs/PRIVACY_SECURITY.md §2.
 ``Settings.host`` controls this; do not change the default to ``0.0.0.0``.
 
 Startup sequence: resolve settings -> initialize/guard the vault -> run
-database migrations to head -> seed default lookup data -> mount routers.
-No step here ever falls back to ``Base.metadata.create_all`` — every schema
-change goes through Alembic (see app/db/migrate.py), including the very
-first one, so there is exactly one way the database schema comes into
-existence.
+database migrations to head -> seed default lookup data -> sweep any
+OCR jobs left stuck ``running`` by a prior crash -> start the background
+OCR worker (if enabled) -> mount routers. No step here ever falls back to
+``Base.metadata.create_all`` — every schema change goes through Alembic
+(see app/db/migrate.py), including the very first one, so there is
+exactly one way the database schema comes into existence.
 """
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -20,12 +22,13 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import annotations, cases, documents, search, tags
+from app.api import annotations, cases, documents, ocr, search, tags
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
 from app.db.seed import seed_annotation_types, seed_document_types
 from app.db.session import make_engine, make_session_factory
+from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -49,10 +52,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed_document_types(db)
         seed_annotation_types(db)
 
+    with session_factory() as db:
+        # Any OCR job still "running" at this point was left that way by
+        # an interrupted worker/app process, not a job actually in
+        # progress right now (nothing has started the worker yet on this
+        # run) — see app/jobs/worker.py::sweep_stuck_jobs.
+        sweep_stuck_jobs(db)
+
     app = FastAPI(title="FERPA Evidence Manager", version="0.1.0")
     app.state.vault = vault
     app.state.session_factory = session_factory
     app.state.settings = settings
+
+    if settings.enable_background_worker:
+        # A single background worker thread, started once per app
+        # instance — see app/jobs/worker.py. `daemon=True` is deliberate,
+        # not a default left unconsidered: `run_worker_loop` only returns
+        # once `stop_event` is set, which nothing currently does at
+        # shutdown, so a *non*-daemon thread here would hang process exit
+        # indefinitely (this was checked, not assumed — a
+        # ThreadPoolExecutor's worker threads are joined at interpreter
+        # exit and would have exactly this problem). A daemon thread is
+        # simply killed on process exit instead, which is the correct
+        # behavior for a single-user, single-machine tool with no
+        # in-flight-job durability guarantee beyond "resume via the
+        # startup recovery sweep next time the app starts" (see
+        # sweep_stuck_jobs above). `stop_event` is still stored on
+        # app.state so a future graceful-shutdown hook can use it.
+        stop_event = threading.Event()
+        worker_thread = threading.Thread(
+            target=run_worker_loop, args=(session_factory, stop_event), daemon=True
+        )
+        worker_thread.start()
+        app.state.ocr_worker_thread = worker_thread
+        app.state.ocr_worker_stop_event = stop_event
 
     app.mount("/static", StaticFiles(directory=BASE_DIR / "web" / "static"), name="static")
     app.state.templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
@@ -60,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(annotations.router)
     app.include_router(cases.router)
     app.include_router(documents.router)
+    app.include_router(ocr.router)
     app.include_router(search.router)
     app.include_router(tags.router)
 

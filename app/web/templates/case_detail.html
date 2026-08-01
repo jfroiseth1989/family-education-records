@@ -4,7 +4,7 @@
   <p><a href="/cases">&larr; All cases</a></p>
   <h1>{{ case.label }} <span class="status-badge status-{{ case.status }}">{{ case.status }}</span></h1>
   {% if case.description %}<p class="case-description">{{ case.description }}</p>{% endif %}
-  <p class="meta">Case #{{ case.case_id }} · created {{ case.created_at }} · <a href="/cases/{{ case.case_id }}/search">Search this case</a> · <a href="/cases/{{ case.case_id }}/notes-search">Search your notes</a></p>
+  <p class="meta">Case #{{ case.case_id }} · created {{ case.created_at }} · <a href="/cases/{{ case.case_id }}/search">Search this case</a> · <a href="/cases/{{ case.case_id }}/notes-search">Search your notes</a> · <a href="/cases/{{ case.case_id }}/ocr-jobs">OCR jobs</a></p>
 
   <section class="panel">
     <h2>Edit case</h2>
