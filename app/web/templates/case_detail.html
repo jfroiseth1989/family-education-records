@@ -89,7 +89,7 @@
     {% if documents %}
       <table class="data-table">
         <thead>
-          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Document date</th><th>Ingested</th><th>SHA-256</th></tr>
+          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Extraction</th><th>Document date</th><th>Ingested</th><th>SHA-256</th></tr>
         </thead>
         <tbody>
           {% for doc in documents %}
@@ -106,6 +106,21 @@
                   {% endif %}
                 {% else %}
                   —
+                {% endif %}
+              </td>
+              <td>
+                {% if doc.extraction_status == "completed" %}
+                  {% if doc.needs_ocr %}
+                    <span class="status-badge status-needs-ocr">Needs OCR</span>
+                  {% else %}
+                    <span class="status-badge status-current">Extracted ({{ doc.page_count }} pg)</span>
+                  {% endif %}
+                {% elif doc.extraction_status == "failed" %}
+                  <span class="status-badge status-failed">Extraction failed</span>
+                {% elif doc.extraction_status == "unsupported_format" %}
+                  <span class="status-badge status-unsupported">Unsupported format</span>
+                {% else %}
+                  <span class="status-badge">Pending</span>
                 {% endif %}
               </td>
               <td>

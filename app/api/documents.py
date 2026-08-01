@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_actor, get_db, get_vault
 from app.core.custody import verify_document_integrity
 from app.core.document_dates import InvalidDateRangeError
+from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
 from app.core.vault import VaultLayout
@@ -146,6 +147,12 @@ def upload_document(
             db.rollback()
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # Extraction runs in the same request, right after a successful
+        # ingest, but never raises out to here -- an unparseable or
+        # unsupported file is recorded via extraction_status/extraction_error
+        # on the document itself (approved decision 6), not an exception.
+        extract_document(db, vault, document, actor)
+
         db.commit()
     finally:
         temp_path.unlink(missing_ok=True)
@@ -189,6 +196,7 @@ def get_document(
             "custody_events": document.custody_events,
             "version_siblings": version_siblings,
             "other_case_documents": other_case_documents,
+            "pages": sorted(document.pages, key=lambda p: p.page_number),
         },
     )
 
@@ -288,6 +296,8 @@ def upload_new_version(
         except InvalidDateRangeError as exc:
             db.rollback()
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        extract_document(db, vault, new_document, actor)
 
         try:
             link_as_new_version(

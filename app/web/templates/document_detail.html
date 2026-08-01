@@ -58,6 +58,63 @@
     </p>
   </section>
 
+  <section class="panel">
+    <h2>Extraction</h2>
+    <table class="kv-table">
+      <tr>
+        <th>Status</th>
+        <td>
+          {% if document.extraction_status == "completed" %}
+            <span class="status-badge status-current">Completed</span>
+            &mdash; {{ document.page_count }} page{{ "s" if document.page_count != 1 else "" }}
+          {% elif document.extraction_status == "failed" %}
+            <span class="status-badge status-failed">Failed</span>
+          {% elif document.extraction_status == "unsupported_format" %}
+            <span class="status-badge status-unsupported">Unsupported format</span>
+          {% else %}
+            <span class="status-badge">Pending</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% if document.extraction_status == "failed" and document.extraction_error %}
+        <tr><th>Error</th><td>{{ document.extraction_error }}</td></tr>
+      {% endif %}
+      <tr><th>Has native text layer</th><td>{{ document.has_text_layer if document.has_text_layer is not none else "—" }}</td></tr>
+      <tr>
+        <th>Needs OCR</th>
+        <td>
+          {% if document.needs_ocr %}
+            <span class="status-badge status-needs-ocr">Yes</span> — see pages below
+          {% else %}
+            No
+          {% endif %}
+        </td>
+      </tr>
+    </table>
+    {% if pages %}
+      <table class="data-table">
+        <thead><tr><th>Page</th><th>Method</th><th>Characters</th><th>Needs OCR</th></tr></thead>
+        <tbody>
+          {% for page in pages %}
+            <tr>
+              <td>{{ page.page_number }}</td>
+              <td>{{ page.extraction_method }}</td>
+              <td>{{ page.char_count }}</td>
+              <td>{{ "Yes" if page.needs_ocr else "No" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    <p class="hint">
+      Extraction reads the stored original but never modifies it — the
+      recorded SHA-256 hash above is unaffected by extraction running or
+      re-running. OCR (for pages flagged "needs OCR") is not part of this
+      phase; it will run in a later phase and populate the OCR text
+      separately, never overwriting native extraction.
+    </p>
+  </section>
+
   {% if version_siblings %}
     <section class="panel">
       <h2>Version history</h2>

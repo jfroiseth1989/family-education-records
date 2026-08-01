@@ -1,14 +1,16 @@
-"""SQLAlchemy ORM models for the Phase 1 schema.
+"""SQLAlchemy ORM models.
 
-Scope note: this Phase 1 schema implements only the tables needed for case
-management, document ingestion, version tracking, and chain of custody —
-see docs/PROJECT_PLAN.md "Phase 1 — Foundations". Tables for later phases
-(extraction, OCR, facts/observations, the relationship graph, annotations,
-etc.) are intentionally not created yet. docs/DATA_MODEL.md is the
-authoritative full target schema; each later phase's migration builds
-toward it incrementally, which is exactly what the lookup-table /
-EAV-metadata extensibility design in that document is for — adding a table
-or column later is additive, not a redesign.
+Scope note: implements the tables built through Phase 2 Step 1 — case
+management, document ingestion, version tracking, chain of custody
+(Phase 1), plus extraction status and the `document_pages`/`citations`
+traceability primitives (Phase 2 Step 1, see docs/PHASE_2_PLAN.md).
+Tables for later phases (OCR text population, facts/observations, the
+relationship graph, annotations, tags, search, etc.) are intentionally
+not created yet. docs/DATA_MODEL.md is the authoritative full target
+schema; each later phase's migration builds toward it incrementally,
+which is exactly what the lookup-table / EAV-metadata extensibility
+design in that document is for — adding a table or column later is
+additive, not a redesign.
 
 Every table here traces to a specific requirement discussed and approved
 before implementation began:
@@ -22,6 +24,19 @@ before implementation began:
   - `document_custody_events`  — the per-document chain-of-custody ledger.
   - `audit_log`                — case/system-level activity, kept separate
                                   from the document-specific custody ledger.
+  - `documents` (extraction_*, page_count, has_text_layer, needs_ocr,
+    ocr_status) — extraction status, first-class and UI-visible rather
+                                  than inferred (Phase 2 Step 1, see
+                                  docs/PHASE_2_PLAN.md §12.1).
+  - `document_pages`           — page-level extracted text, with a
+                                  `source_sha256` snapshot linking each
+                                  page back to its source document's hash
+                                  independent of the FK join (§12.2).
+  - `citations`                 — the exact document/page/span reference
+                                  primitive every later phase (facts,
+                                  timeline, relationship graph) cites
+                                  through exclusively (§12.4). Not yet
+                                  written by any UI action in Step 1.
 """
 
 from __future__ import annotations
@@ -33,6 +48,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -252,6 +268,31 @@ class Document(Base):
     )
     version_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- Extraction status (Phase 2 Step 1, docs/PHASE_2_PLAN.md §4/§12.1) ---
+    # extraction_status is the "did the extraction process itself run and
+    # complete" axis: pending / completed / failed / unsupported_format.
+    # needs_ocr is a separate, orthogonal axis -- "does some page's
+    # *content* need OCR" -- true regardless of whether extraction
+    # completed cleanly (e.g. a PDF can extract successfully overall while
+    # some of its pages are scanned images needing OCR).
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    has_text_layer: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # server_default (not just the Python-side `default=`) is required here,
+    # not optional: these columns are added to an already-populated table
+    # by a later migration, and SQLite refuses to ALTER TABLE ADD COLUMN
+    # ... NOT NULL without a default when existing rows would otherwise get
+    # NULL. Discovered by testing the migration against a non-empty table.
+    needs_ocr: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    # Reserved for Phase 3 (OCR execution): not_needed / queued / done / failed.
+    # Phase 2 never sets this to anything but null.
+    ocr_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    extraction_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     case: Mapped["Case"] = relationship(back_populates="documents")
     document_type: Mapped["DocumentType | None"] = relationship(back_populates="documents")
     version_group: Mapped["DocumentVersionGroup | None"] = relationship(
@@ -264,6 +305,11 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
         order_by="DocumentCustodyEvent.event_timestamp",
+    )
+    pages: Mapped[list["DocumentPage"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentPage.page_number",
     )
 
 
@@ -298,6 +344,75 @@ class DocumentCustodyEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     document: Mapped["Document"] = relationship(back_populates="custody_events")
+
+
+class DocumentPage(Base):
+    """One page's worth of extracted (or, in Phase 3, OCR'd) text.
+
+    See docs/DATA_MODEL.md "document_pages" and docs/PHASE_2_PLAN.md §4/§12.
+    `extracted_text` is populated by native extraction (Phase 2);
+    `ocr_text` and `extraction_confidence` exist now so Phase 3 can
+    populate them via `UPDATE` without a further migration, but Phase 2
+    never writes to either.
+    """
+
+    __tablename__ = "document_pages"
+    __table_args__ = (
+        UniqueConstraint("document_id", "page_number", name="uq_document_page_number"),
+    )
+
+    page_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=False
+    )
+
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_method: Mapped[str] = mapped_column(String(20), nullable=False)  # native/ocr/none
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    needs_ocr: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # A snapshot of documents.sha256_hash at the moment this page was
+    # extracted, independent of the document_id FK -- see
+    # docs/PHASE_2_PLAN.md §12.2. Should always equal the parent
+    # document's current hash, since documents are immutable after
+    # creation; a divergence would indicate something worth investigating.
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    document: Mapped["Document"] = relationship(back_populates="pages")
+
+
+class Citation(Base):
+    """The exact document/page/span reference primitive.
+
+    See docs/DATA_MODEL.md "citations" and docs/PHASE_2_PLAN.md §12.4:
+    every later phase (verified facts, timeline events, the relationship
+    graph) cites through this table exclusively — there is no competing
+    reference mechanism. Not yet written by any UI action as of Phase 2
+    Step 1 (highlight creation in Step 4 is the first writer); the table
+    exists now so that design is built, not just planned.
+    """
+
+    __tablename__ = "citations"
+
+    citation_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=False
+    )
+    page_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_pages.page_id"), nullable=True
+    )
+
+    start_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    paragraph_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bounding_box: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    quoted_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    document: Mapped["Document"] = relationship()
+    page: Mapped["DocumentPage | None"] = relationship()
 
 
 class AuditLog(Base):
