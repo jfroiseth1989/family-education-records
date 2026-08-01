@@ -309,6 +309,22 @@ Revises `docs/PHASE_3_PLAN.md` §4 (see §8 below for what changed and why).
 - `correction_id` (PK), `page_id` (FK → `document_pages`)
 - `corrected_text` (`NOT NULL`), `corrected_by`, `corrected_at`
 
+`ocr_text_history` — **new, added by §9's clarification below** (not in
+the original plan or in decisions 1–7 above): archives a page's raw OCR
+text immediately before a re-OCR run overwrites it, so a superseded raw
+OCR value is never simply lost the way a superseded `document_pages` row
+already is on native re-extraction (Phase 2 Step 1's approved, deliberate
+behavior — see §9.3 for why OCR gets a stronger guarantee here):
+- `history_id` (PK), `page_id` (FK → `document_pages`)
+- `ocr_text`, `extraction_confidence` — the values being superseded
+- `superseded_at`, `superseded_by_job_id` (FK → `ocr_jobs`)
+
+Written once, automatically, by `run_ocr_job()` itself, immediately before
+it overwrites a page's existing (non-null) `ocr_text` on a reprocess run
+— never on a page's first OCR run, since there's nothing to archive yet.
+Never updated or deleted afterward, same append-only treatment as
+`ocr_corrections`.
+
 **Existing table gaining columns (new since the original plan — see §8):**
 
 `citations` gains, per Decision 2:
@@ -327,17 +343,21 @@ Revises `docs/PHASE_3_PLAN.md` §4 (see §8 below for what changed and why).
 
 ## Migration plan
 
-Three migrations, ordered to match the step breakdown in §9 below (revised
-from the original plan's two-migration estimate — see §8):
+Four migrations (revised from three — see §9.3's `ocr_text_history`
+addition), ordered to match the step breakdown in the final implementation
+plan (`docs/PHASE_3_IMPLEMENTATION_PLAN.md`):
 
 1. **`ocr_jobs`** (Step 0 — job queue). Plain ORM-modeled table.
 2. **`citations` ALTER** (Step 1 — OCR execution core, the step where
    `create_highlight()` first becomes able to cite an OCR page). Adds
-   `text_source` (`NOT NULL`, backfilled `'native'`) and
-   `source_confidence` (nullable). Also where `document_pages` gains
-   `ocr_word_boxes` (nullable, additive, no backfill needed — every
-   existing row correctly gets `NULL`).
-3. **`ocr_corrections`** (Step 3 — correction layer). Plain ORM-modeled
+   `text_source` (`NOT NULL`, backfilled `'native'` via `server_default`
+   — see §9.1 for the exact mechanics) and `source_confidence` (nullable).
+   Also where `document_pages` gains `ocr_word_boxes` (nullable, additive,
+   no backfill needed — every existing row correctly gets `NULL`).
+3. **`ocr_text_history`** (Step 1, same step as above — it's part of the
+   same OCR-execution-core work, not a separate reviewable step). Plain
+   ORM-modeled table.
+4. **`ocr_corrections`** (Step 3 — correction layer). Plain ORM-modeled
    table.
 
 Every one of these must be manually inspected before applying — the
@@ -410,6 +430,152 @@ the two documents:
 unchanged: Step 0 (job queue) → Step 1 (OCR execution core, now also
 carrying the `citations` migration) → Step 2 (search integration) →
 Step 3 (correction layer) → Step 4 (review UI).
+
+## 9. Final clarifications
+
+Three specific confirmations requested before implementation, each
+checked precisely rather than asserted.
+
+### 9.1 Existing citation migration behavior
+
+**What values will existing Phase 2 citations receive?**
+`text_source = 'native'`, `source_confidence = NULL` — for every single
+pre-Phase-3 row, no exceptions. Concretely, the migration adds both
+columns with SQLite's own `ALTER TABLE ADD COLUMN ... DEFAULT` mechanism
+doing the backfill automatically, not a separate `UPDATE` statement:
+
+```python
+op.add_column(
+    'citations',
+    sa.Column('text_source', sa.String(20), nullable=False, server_default='native'),
+)
+op.add_column(
+    'citations',
+    sa.Column('source_confidence', sa.Float(), nullable=True),
+)
+```
+
+`server_default='native'` is deliberate, not incidental — Phase 2 Step 1
+hit exactly this class of bug once already (a `NOT NULL` column added via
+`ALTER TABLE` without a `server_default`, which breaks on a database that
+already has rows). This migration consciously avoids repeating that
+mistake: because `text_source` is `NOT NULL`, every existing row needs a
+value the moment the column exists, and `server_default='native'`
+supplies it as part of the same `ALTER TABLE` statement, atomically —
+there's no window where an existing row is column-added-but-not-yet-
+backfilled. `source_confidence` stays nullable, so it needs no default at
+all — `NULL` is its own correct value for a citation that was never
+based on OCR.
+
+**Confirm no existing citations lose provenance.** Confirmed on two
+independent grounds:
+1. **Correctness of the backfill value, not just its presence.** Every
+   citation that exists today was created by Step 4's `create_highlight()`,
+   which — before this phase — only ever sliced `page.extracted_text`
+   (native text; OCR didn't exist yet). There is no code path anywhere in
+   the shipped Phase 1/2 codebase that could have produced a citation from
+   OCR text. `'native'` is not a defensive guess for ambiguous data — it's
+   the only value that was ever possible for these rows.
+2. **The migration touches nothing else.** It is exactly two
+   `ADD COLUMN` statements — `quoted_text`, `start_offset`, `end_offset`,
+   `document_id`, `page_id`, `citation_id`, and every existing row's
+   identity are untouched. This will be locked in by a migration
+   regression test mirroring Step 1's
+   `test_migrations_apply_cleanly_against_a_populated_documents_table`:
+   seed a citation at the pre-Phase-3 revision, run the migration, and
+   assert every original column is byte-for-byte unchanged and the two
+   new columns read exactly `('native', None)`.
+
+### 9.2 Citation immutability
+
+**Confirmed: `text_source` and `source_confidence` are set once, at
+citation creation, and nothing in this plan ever updates them
+afterward.** Verified empirically this session, not just designed that
+way on paper — `grep`ing the current codebase for every site that
+constructs or touches a `Citation` shows exactly one: `Citation(...)` in
+`create_highlight()` (`app/core/annotations/service.py`). There is no
+citation-edit route, no code path that loads an existing `Citation` and
+reassigns any of its fields, for any column, native or otherwise — this
+has been true since Step 4 and this plan does not change it. Phase 3's
+extension of `create_highlight()` (§2/Decision 2) sets both new columns
+at the same `Citation(...)` construction site, the same way every other
+column is set — there is no second write path being introduced.
+
+This also answers a related question worth stating explicitly: **a
+correction or a re-OCR run on a page never retroactively changes any
+citation already made from that page.** A citation created before a
+correction keeps recording `text_source = 'ocr_raw'` and whatever
+confidence was current then, even after a correction exists — it
+accurately describes what was actually quoted *at the time*, not the
+page's current state. A new citation made *after* the correction would
+correctly get `text_source = 'ocr_corrected'`. Two citations from the
+same page can legitimately have different `text_source` values if one
+predates a correction and one postdates it — that's not an inconsistency,
+it's the intended behavior.
+
+No database-level trigger enforcing immutability is proposed — consistent
+with how the rest of this schema already works (`document_custody_events`
+and `audit_log` are also append-only by convention and the absence of any
+`UPDATE` code path, not by a DB-level `INSTEAD OF UPDATE` trigger).
+Adding one for `citations` specifically, when no other table in this
+schema has one, would be inconsistent scope for a guarantee that's
+already fully enforced by there being no update code path at all — a
+migration/unit test asserting this (attempt to reassign a citation's
+`text_source` after creation, confirm nothing in the service layer
+exposes a way to do so) is the appropriate, precedent-matching level of
+rigor.
+
+### 9.3 OCR correction history
+
+**Corrections: fully append-only, confirmed.** `ocr_corrections` rows are
+only ever `INSERT`ed — no application code path updates or deletes one.
+Every correction ever made to a page stays queryable forever; "the
+current corrected text" is just "the latest row," never a destructive
+operation on an earlier one.
+
+**Raw OCR history across a re-OCR run: this needed a real design
+addition, not just a restatement — flagged plainly rather than glossed
+over.** The design as decided through §7 above (matching Phase 2 Step 1's
+approved extraction-re-run behavior) had `document_pages.ocr_text`
+**replaced** on a reprocess run, the same idempotent pattern extraction
+already uses — which means the specific superseded raw OCR text, if nothing
+had ever cited it, would not have been separately recoverable after a
+re-OCR. That's a materially weaker guarantee than "previous OCR states
+remain recoverable," so this plan adds `ocr_text_history` (§ schema
+above) to close that gap: **every raw OCR value a page ever had, not just
+every correction, is now permanently recoverable.**
+
+Mechanism: immediately before `run_ocr_job()` overwrites a page's
+existing (non-null) `ocr_text` on a reprocess, it archives the value
+being superseded into `ocr_text_history`, tagged with which `ocr_jobs`
+run replaced it. A page's first-ever OCR run archives nothing (there's
+nothing to supersede yet). Like `ocr_corrections`, this table is
+`INSERT`-only.
+
+**Why OCR gets a stronger retention guarantee here than native
+re-extraction still has.** Worth stating plainly rather than leaving an
+unexplained asymmetry between two phases: re-running native extraction
+against the *same, unchanged, hash-verified original file* should,
+correctness bugs aside, deterministically reproduce the same text every
+time — archiving superseded `document_pages.extracted_text` rows has low
+marginal evidentiary value. A Tesseract OCR run is not deterministic in
+the same sense (engine version, configuration, or even incidental
+environment differences can change its output between runs on the exact
+same image) — so a superseded raw OCR guess is a genuinely different,
+independently meaningful artifact, not just a reproducible recomputation.
+This plan treats that difference as a reason for a stronger guarantee,
+not an inconsistency to resolve by weakening either side.
+
+**Net effect:** between `ocr_text_history` (every raw OCR value a page
+ever had) and `ocr_corrections` (every correction ever made), combined
+with `citations.quoted_text`/`text_source`/`source_confidence` snapshots
+(§9.2 — permanently fixed at the moment each citation was made) and the
+chain-of-custody ledger (`ocr_queued`/`ocr_completed`/`ocr_reprocessed`/
+`ocr_corrected`, recording *that* each event happened even independent of
+the text itself), a page's complete OCR/correction history is
+reconstructable from four independent, mutually reinforcing records —
+the same layered-redundancy approach already used for hash verification
+throughout this app, applied here to OCR text specifically.
 
 ## Confirmation: no Phase 3 code has started
 
