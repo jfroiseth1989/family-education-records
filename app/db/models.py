@@ -814,6 +814,13 @@ class AiObservation(Base):
 
     case: Mapped["Case"] = relationship()
     fact_type: Mapped["FactType"] = relationship()
+    # Read-only convenience view over ai_observation_citations -- never
+    # written through (viewonly=True); create_ai_observation() is the
+    # only place a citation is ever attached, via that association table
+    # directly, per its own docstring.
+    citations: Mapped[list["Citation"]] = relationship(
+        secondary="ai_observation_citations", viewonly=True
+    )
 
 
 class AiObservationCitation(Base):
@@ -877,6 +884,13 @@ class VerifiedFact(Base):
     case: Mapped["Case"] = relationship()
     fact_type: Mapped["FactType"] = relationship()
     source_observation: Mapped["AiObservation | None"] = relationship()
+    # Read-only convenience view over verified_fact_citations -- never
+    # written through (viewonly=True); create_verified_fact() and
+    # promote_observation() are the only places a citation is ever
+    # attached, via that association table directly.
+    citations: Mapped[list["Citation"]] = relationship(
+        secondary="verified_fact_citations", viewonly=True
+    )
 
 
 class VerifiedFactCitation(Base):

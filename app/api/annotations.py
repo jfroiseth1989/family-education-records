@@ -25,6 +25,7 @@ from app.core.annotations.service import (
     list_page_annotations,
     remove_annotation,
 )
+from app.core.facts.service import CONFIDENCE_LABELS, list_fact_types
 from app.core.indexing.notes_search import search_case_annotation_notes
 from app.db.models import Annotation, Case, Document, DocumentPage
 
@@ -83,6 +84,8 @@ def view_document(
             "highlights": highlights,
             "notes": notes,
             "bookmarks": bookmarks,
+            "fact_types": list_fact_types(db),
+            "confidence_labels": sorted(CONFIDENCE_LABELS),
         },
     )
 

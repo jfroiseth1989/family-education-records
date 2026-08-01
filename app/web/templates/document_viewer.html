@@ -83,6 +83,34 @@
               <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ h.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
                 <button type="submit" class="tag-remove" title="Remove highlight">&times;</button>
               </form>
+              <details>
+                <summary>Assert fact from this citation</summary>
+                <form method="post" action="/documents/{{ document.document_id }}/facts/create-from-citation">
+                  <input type="hidden" name="citation_id" value="{{ h.citation.citation_id }}">
+                  <input type="hidden" name="page" value="{{ current_page_number }}">
+                  <label>
+                    Fact type
+                    <select name="fact_type" required>
+                      {% for ft in fact_types %}
+                        <option value="{{ ft.name }}">{{ ft.name }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <label>
+                    Statement
+                    <textarea name="statement" rows="2" required>{{ h.citation.quoted_text }}</textarea>
+                  </label>
+                  <label>
+                    Confidence
+                    <select name="confidence_label" required>
+                      {% for label in confidence_labels %}
+                        <option value="{{ label }}">{{ label }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                  <button type="submit">Save as verified fact</button>
+                </form>
+              </details>
             </li>
           {% endfor %}
         </ul>

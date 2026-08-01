@@ -333,3 +333,8 @@ def list_verified_facts(db: Session, case_id: int) -> list[VerifiedFact]:
         .where(VerifiedFact.case_id == case_id, VerifiedFact.deleted_at.is_(None))
         .order_by(VerifiedFact.created_at.desc())
     ).all()
+
+
+def list_fact_types(db: Session) -> list[FactType]:
+    """Active fact types, for populating a fact-type selector in the UI."""
+    return db.scalars(select(FactType).where(FactType.is_active.is_(True)).order_by(FactType.name)).all()
