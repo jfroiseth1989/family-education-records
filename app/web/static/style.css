@@ -163,3 +163,61 @@ button {
   font-size: 1em;
   line-height: 1;
 }
+
+#page-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 0.95rem;
+  user-select: text;
+}
+
+#highlight-form {
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+}
+
+.annotation-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.annotation-list li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.annotation-list li:last-child {
+  border-bottom: none;
+}
+
+.highlight-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 2px;
+  margin-right: 0.3rem;
+  background: rgba(191, 135, 0, 0.4);
+  vertical-align: middle;
+}
+
+.highlight-swatch[data-color="yellow"] { background: rgba(214, 191, 0, 0.5); }
+.highlight-swatch[data-color="green"] { background: rgba(26, 127, 55, 0.4); }
+.highlight-swatch[data-color="pink"] { background: rgba(214, 51, 132, 0.4); }
+.highlight-swatch[data-color="blue"] { background: rgba(43, 108, 176, 0.4); }

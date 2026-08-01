@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import DocumentType
+from app.db.models import AnnotationType, DocumentType
 
 # Matches the default list in docs/DATA_MODEL.md "documents". Users are not
 # limited to this list — DocumentType is a lookup table specifically so
@@ -26,6 +26,14 @@ DEFAULT_DOCUMENT_TYPES: list[tuple[str, str]] = [
     ("Other", "Anything that doesn't fit another category"),
 ]
 
+# Matches docs/DATA_MODEL.md "annotation_types" -- the three annotation
+# kinds designed in Phase 2 Step 4 (docs/PHASE_2_PLAN.md §7).
+DEFAULT_ANNOTATION_TYPES: list[tuple[str, str]] = [
+    ("highlight", "An exact, offset-anchored span of a page's text"),
+    ("note", "A free-text note attached to a document or page"),
+    ("bookmark", "A page-level marker with no required text"),
+]
+
 
 def seed_document_types(db: Session) -> None:
     """Insert the default document types if they don't already exist.
@@ -37,4 +45,16 @@ def seed_document_types(db: Session) -> None:
     for name, description in DEFAULT_DOCUMENT_TYPES:
         if name not in existing_names:
             db.add(DocumentType(name=name, description=description))
+    db.commit()
+
+
+def seed_annotation_types(db: Session) -> None:
+    """Insert the default annotation types if they don't already exist.
+
+    Idempotent, same pattern as seed_document_types().
+    """
+    existing_names = set(db.scalars(select(AnnotationType.name)))
+    for name, description in DEFAULT_ANNOTATION_TYPES:
+        if name not in existing_names:
+            db.add(AnnotationType(name=name, description=description))
     db.commit()

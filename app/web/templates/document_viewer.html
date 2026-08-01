@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}View {{ document.original_filename }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/documents/{{ document.document_id }}">&larr; {{ document.original_filename }}</a></p>
+  <h1>{{ document.original_filename }} <span class="meta">— page {{ current_page_number }} of {{ pages | length }}</span></h1>
+
+  {% if pages %}
+    <p class="page-nav">
+      {% if current_page_number > 1 %}
+        <a href="/documents/{{ document.document_id }}/view?page={{ current_page_number - 1 }}">&larr; Previous page</a>
+      {% endif %}
+      {% for p in pages %}
+        {% if p.page_number == current_page_number %}
+          <strong>{{ p.page_number }}</strong>
+        {% else %}
+          <a href="/documents/{{ document.document_id }}/view?page={{ p.page_number }}">{{ p.page_number }}</a>
+        {% endif %}
+      {% endfor %}
+      {% if current_page_number < (pages | length) %}
+        <a href="/documents/{{ document.document_id }}/view?page={{ current_page_number + 1 }}">Next page &rarr;</a>
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if not current_page %}
+    <section class="panel">
+      <p class="empty-state">
+        {% if not pages %}
+          This document has no extracted pages yet — see its Extraction
+          status on the document detail page.
+        {% else %}
+          Page {{ current_page_number }} does not exist for this document.
+        {% endif %}
+      </p>
+    </section>
+  {% else %}
+    <section class="panel">
+      <h2>Page text</h2>
+      {% if current_page.needs_ocr %}
+        <p class="hint">
+          This page is flagged "needs OCR" — little or no native text was
+          extracted. What's shown below is exactly what extraction found,
+          nothing more.
+        </p>
+      {% endif %}
+      <pre id="page-text" data-page-id="{{ current_page.page_id }}">{{ current_page.extracted_text or "" }}</pre>
+      <p class="hint">
+        Select text above to highlight it. The highlight's quoted text is
+        always taken directly from this page's stored extraction — never
+        from what you select in the browser — so it can never drift from
+        the source.
+      </p>
+
+      <form id="highlight-form" method="post" action="/documents/{{ document.document_id }}/annotations/highlight" style="display:none">
+        <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
+        <input type="hidden" id="highlight-start" name="start_offset" value="">
+        <input type="hidden" id="highlight-end" name="end_offset" value="">
+        <p><strong>Selected:</strong> <span id="highlight-preview"></span></p>
+        <label>
+          Color (optional)
+          <select name="color">
+            <option value="">(default)</option>
+            <option value="yellow">Yellow</option>
+            <option value="green">Green</option>
+            <option value="pink">Pink</option>
+            <option value="blue">Blue</option>
+          </select>
+        </label>
+        <button type="submit">Save highlight</button>
+        <button type="button" id="highlight-cancel">Cancel</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Highlights on this page</h2>
+      {% if highlights %}
+        <ul class="annotation-list">
+          {% for h in highlights %}
+            <li>
+              <span class="highlight-swatch" data-color="{{ h.color or 'default' }}"></span>
+              &ldquo;{{ h.citation.quoted_text }}&rdquo;
+              <span class="meta">(offsets {{ h.citation.start_offset }}&ndash;{{ h.citation.end_offset }}, by {{ h.created_by }})</span>
+              <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ h.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <button type="submit" class="tag-remove" title="Remove highlight">&times;</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No highlights on this page yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>Notes on this page</h2>
+      {% if notes %}
+        <ul class="annotation-list">
+          {% for n in notes %}
+            <li>
+              {{ n.body_text }}
+              <span class="meta">(by {{ n.created_by }}, {{ n.created_at }})</span>
+              <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ n.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <button type="submit" class="tag-remove" title="Remove note">&times;</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No notes on this page yet.</p>
+      {% endif %}
+      <form method="post" action="/documents/{{ document.document_id }}/annotations/note">
+        <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
+        <label>
+          Add a note
+          <textarea name="body_text" rows="3" required placeholder="e.g. Compare to the evaluation dated ..."></textarea>
+        </label>
+        <button type="submit">Add note</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Bookmarks on this page</h2>
+      {% if bookmarks %}
+        <ul class="annotation-list">
+          {% for b in bookmarks %}
+            <li>
+              {{ b.body_text or "(no note)" }}
+              <span class="meta">(by {{ b.created_by }}, {{ b.created_at }})</span>
+              <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ b.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <button type="submit" class="tag-remove" title="Remove bookmark">&times;</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty-state">No bookmarks on this page yet.</p>
+      {% endif %}
+      <form method="post" action="/documents/{{ document.document_id }}/annotations/bookmark">
+        <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
+        <label>
+          Bookmark label (optional)
+          <input type="text" name="body_text" maxlength="200" placeholder="e.g. Key date">
+        </label>
+        <button type="submit">Add bookmark</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <script src="/static/highlight.js"></script>
+{% endblock %}

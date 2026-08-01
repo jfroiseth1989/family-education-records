@@ -17,7 +17,7 @@ from app.config import Settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
 from app.db.models import Case
-from app.db.seed import seed_document_types
+from app.db.seed import seed_annotation_types, seed_document_types
 from app.db.session import make_engine, make_session_factory
 from app.main import create_app
 
@@ -45,6 +45,7 @@ def db_session(vault: VaultLayout):
     session_factory = make_session_factory(engine)
     with session_factory() as db:
         seed_document_types(db)
+        seed_annotation_types(db)
         yield db
 
 

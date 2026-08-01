@@ -47,6 +47,8 @@
     <p>
       <a href="/documents/{{ document.document_id }}/file">Download / view original file</a>
       &nbsp;·&nbsp;
+      <a href="/documents/{{ document.document_id }}/view">View &amp; annotate this document</a>
+      &nbsp;·&nbsp;
       <form method="post" action="/documents/{{ document.document_id }}/verify" style="display:inline">
         <button type="submit">Verify integrity now</button>
       </form>
@@ -112,6 +114,17 @@
       re-running. OCR (for pages flagged "needs OCR") is not part of this
       phase; it will run in a later phase and populate the OCR text
       separately, never overwriting native extraction.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Annotations</h2>
+    <p>
+      {{ annotation_counts.highlight }} highlight{{ "s" if annotation_counts.highlight != 1 else "" }},
+      {{ annotation_counts.note }} note{{ "s" if annotation_counts.note != 1 else "" }},
+      {{ annotation_counts.bookmark }} bookmark{{ "s" if annotation_counts.bookmark != 1 else "" }}
+      &nbsp;·&nbsp;
+      <a href="/documents/{{ document.document_id }}/view">Open viewer</a>
     </p>
   </section>
 

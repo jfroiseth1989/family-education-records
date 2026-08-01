@@ -20,11 +20,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import cases, documents, search, tags
+from app.api import annotations, cases, documents, search, tags
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
-from app.db.seed import seed_document_types
+from app.db.seed import seed_annotation_types, seed_document_types
 from app.db.session import make_engine, make_session_factory
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -47,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     with session_factory() as db:
         seed_document_types(db)
+        seed_annotation_types(db)
 
     app = FastAPI(title="FERPA Evidence Manager", version="0.1.0")
     app.state.vault = vault
@@ -56,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=BASE_DIR / "web" / "static"), name="static")
     app.state.templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
 
+    app.include_router(annotations.router)
     app.include_router(cases.router)
     app.include_router(documents.router)
     app.include_router(search.router)

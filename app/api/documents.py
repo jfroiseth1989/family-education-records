@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_actor, get_db, get_vault
+from app.core.annotations.service import count_document_annotations
 from app.core.custody import verify_document_integrity
 from app.core.document_dates import InvalidDateRangeError
 from app.core.extraction.service import extract_document
@@ -190,6 +191,7 @@ def get_document(
 
     document_tags = sorted((link.tag for link in document.tag_links), key=lambda t: t.name.lower())
     case_tags = list_case_tags(db, document.case_id)
+    annotation_counts = count_document_annotations(db, document.document_id)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -203,6 +205,7 @@ def get_document(
             "pages": sorted(document.pages, key=lambda p: p.page_number),
             "document_tags": document_tags,
             "case_tags": case_tags,
+            "annotation_counts": annotation_counts,
         },
     )
 

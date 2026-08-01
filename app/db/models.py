@@ -1,18 +1,18 @@
 """SQLAlchemy ORM models.
 
-Scope note: implements the tables built through Phase 2 Step 3 — case
+Scope note: implements the tables built through Phase 2 Step 4 — case
 management, document ingestion, version tracking, chain of custody
 (Phase 1); extraction status and the `document_pages`/`citations`
 traceability primitives (Step 1); the `document_text_fts` search index
 (Step 2, defined in a hand-written migration, not here — see
-app/db/migrations/versions/08c778ee32af_*.py); and case-scoped tags
-(Step 3). Tables for later phases (OCR text population,
-facts/observations, the relationship graph, annotations, etc.) are
-intentionally not created yet. docs/DATA_MODEL.md is the authoritative
-full target schema; each later phase's migration builds toward it
-incrementally, which is exactly what the lookup-table / EAV-metadata
-extensibility design in that document is for — adding a table or column
-later is additive, not a redesign.
+app/db/migrations/versions/08c778ee32af_*.py); case-scoped tags (Step 3);
+and `annotation_types`/`annotations` (Step 4). Tables for later phases
+(OCR text population, facts/observations, the relationship graph,
+`annotation_notes_fts`, etc.) are intentionally not created yet.
+docs/DATA_MODEL.md is the authoritative full target schema; each later
+phase's migration builds toward it incrementally, which is exactly what
+the lookup-table / EAV-metadata extensibility design in that document is
+for — adding a table or column later is additive, not a redesign.
 
 Every table here traces to a specific requirement discussed and approved
 before implementation began:
@@ -37,11 +37,16 @@ before implementation began:
   - `citations`                 — the exact document/page/span reference
                                   primitive every later phase (facts,
                                   timeline, relationship graph) cites
-                                  through exclusively (§12.4). Not yet
-                                  written by any UI action in Step 1-3.
+                                  through exclusively (§12.4). First
+                                  written by highlight creation in Step 4.
   - `tags` / `document_tags`   — case-scoped labels a user attaches to
                                   documents (Phase 2 Step 3). No rename or
                                   delete UI yet — see the Tag docstring.
+  - `annotation_types` /
+    `annotations`               — highlights, notes, and bookmarks (Phase 2
+                                  Step 4). A highlight always creates a
+                                  `citations` row too — see the Annotation
+                                  docstring.
 """
 
 from __future__ import annotations
@@ -470,6 +475,71 @@ class DocumentTag(Base):
 
     document: Mapped["Document"] = relationship(back_populates="tag_links")
     tag: Mapped["Tag"] = relationship()
+
+
+class AnnotationType(Base):
+    """Lookup table for annotation kinds (highlight / note / bookmark).
+
+    Same extensibility pattern as `document_types` — a new kind is a row
+    insert, not a migration. Seeded with defaults by app/db/seed.py.
+    """
+
+    __tablename__ = "annotation_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class Annotation(Base):
+    """A highlight, note, or bookmark a user attaches to a document (or a
+    specific page/span of it).
+
+    See docs/DATA_MODEL.md "annotations" and docs/PHASE_2_PLAN.md §7/§13
+    Step 4. A highlight always carries a `citation_id` (the exact span it
+    marks — see app/core/annotations/service.py, which derives
+    `quoted_text` on that citation from the page's own stored text rather
+    than trusting anything client-submitted). A note or bookmark may be
+    page-scoped without a citation. Soft-delete only (`deleted_at`) — the
+    linked citation, if any, is never touched by removing an annotation;
+    see docs/PHASE_2_PLAN.md §12.4 on citations being permanent.
+
+    Deliberately excluded from any future binder path and never usable as
+    a citation source for a verified fact — see docs/DATA_MODEL.md
+    "Annotations" for the full rationale. Not yet indexed for search in
+    Step 4 — `annotation_notes_fts` is Step 5.
+    """
+
+    __tablename__ = "annotations"
+
+    annotation_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=False
+    )
+    page_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_pages.page_id"), nullable=True
+    )
+    citation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("citations.citation_id"), nullable=True
+    )
+    annotation_type_id: Mapped[int] = mapped_column(
+        ForeignKey("annotation_types.type_id"), nullable=False
+    )
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    document: Mapped["Document"] = relationship()
+    page: Mapped["DocumentPage | None"] = relationship()
+    citation: Mapped["Citation | None"] = relationship()
+    annotation_type: Mapped["AnnotationType"] = relationship()
 
 
 class AuditLog(Base):
