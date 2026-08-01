@@ -112,7 +112,14 @@ phase wouldn't need to `ALTER` either of those tables. Phase 3 is simply
 the first writer of three already-migrated columns — the same pattern
 `citations` followed until Step 4 became its first writer.
 
-**No changes to any existing table.** Two new tables only:
+**No changes to `documents` or `document_pages`.** Two new tables, plus
+one small addition to `citations` — see
+`docs/PHASE_3_DECISIONS.md` §"Consolidated schema changes" and §8, which
+supersedes the "no changes to any existing table" claim originally made
+here: `citations` gains `text_source`/`source_confidence` to satisfy the
+citation-distinguishability requirement resolved in that document's
+Decision 2. `document_pages` also gains one nullable `ocr_word_boxes`
+column per that document's Decision 6.
 
 ### `ocr_jobs` (new)
 One row per OCR run of one document (matching `docs/DATA_MODEL.md`'s
@@ -486,6 +493,14 @@ app/web/templates/
 
 ## 14. Open decisions needing owner sign-off before implementation
 
+**Status: Resolved — see `docs/PHASE_3_DECISIONS.md`.** All seven items
+below were reviewed and decided in that document, which also finalized
+the raw/corrected storage, traceability, and search-ranking design from
+§5/§6/§9 above and records two small corrections to this plan (the
+`citations` schema change and the resulting three-migration count). The
+list below is kept as-written for the historical record of what was asked;
+it is no longer the live decision log.
+
 Numbered so they can be answered individually, same convention as every
 prior plan's decisions list:
 
@@ -545,9 +560,13 @@ Proposed split, each independently testable:
   execution yet — provable with a fake/no-op job to prove the queue
   mechanics work in isolation first.
 - **Step 1 — OCR execution core.** `pytesseract` integration,
-  `run_ocr_job()`, raw `ocr_text`/`extraction_confidence` writes,
-  per-page partial-failure handling, custody events.
-  `test_ocr_never_modifies_the_stored_original` lands here.
+  `run_ocr_job()`, raw `ocr_text`/`extraction_confidence`/`ocr_word_boxes`
+  writes, per-page partial-failure handling, custody events, and — per
+  `docs/PHASE_3_DECISIONS.md` §"Migration plan" — the `citations`
+  migration (`text_source`/`source_confidence`) and the extension to
+  `create_highlight()` that sets them, since this is the step where an
+  OCR page first becomes citable. `test_ocr_never_modifies_the_stored_
+  original` lands here.
 - **Step 2 — Search integration.** Confirm/extend `document_text_fts`
   behavior for raw `ocr_text` (likely needs no code, per §9 — this step
   is mostly verification), add the OCR-provenance badge to search
