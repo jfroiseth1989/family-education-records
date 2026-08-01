@@ -65,12 +65,17 @@
       <h2>Results ({{ results | length }})</h2>
       {% if results %}
         <table class="data-table">
-          <thead><tr><th>Document</th><th>Page</th><th>Excerpt</th></tr></thead>
+          <thead><tr><th>Document</th><th>Page</th><th>Source</th><th>Excerpt</th></tr></thead>
           <tbody>
             {% for result in results %}
               <tr>
                 <td><a href="/documents/{{ result.document_id }}">{{ result.original_filename }}</a></td>
                 <td>{{ result.page_number }}</td>
+                <td>
+                  {% if result.extraction_method == "ocr" %}
+                    <span class="status-badge status-needs-ocr" title="Transcribed by OCR — verify against the original before relying on exact wording.">OCR</span>
+                  {% endif %}
+                </td>
                 <td>{{ result.snippet }}</td>
               </tr>
             {% endfor %}

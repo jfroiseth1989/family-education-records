@@ -7,6 +7,13 @@ page — that's the whole point of building this on `document_pages`
 rather than a free-floating index: a search result is never just text,
 it's always a citable location. Case-scoped only; no cross-case search
 in Phase 2 — see docs/PHASE_2_PLAN.md §6.
+
+`SearchResult.extraction_method` (Phase 3 Step 2) is a straight passthrough
+of `document_pages.extraction_method` -- added so the UI can show a
+provenance badge (native vs. OCR) per result, per
+docs/PHASE_3_IMPLEMENTATION_PLAN.md §8. Verified this needed no change to
+`document_text_fts` itself or its sync triggers -- those already cover
+`ocr_text` since Phase 2 Step 2 (see tests/test_ocr_search_integration.py).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ class SearchResult:
     page_number: int
     original_filename: str
     snippet: str
+    extraction_method: str  # native / ocr / none -- see document_pages.extraction_method
 
 
 def search_case_documents(
@@ -84,6 +92,7 @@ def search_case_documents(
             dp.page_id AS page_id,
             dp.page_number AS page_number,
             d.original_filename AS original_filename,
+            dp.extraction_method AS extraction_method,
             snippet(document_text_fts, -1, '[', ']', '…', 10) AS snippet
         FROM document_text_fts
         JOIN document_pages dp ON dp.page_id = document_text_fts.rowid
@@ -105,6 +114,7 @@ def search_case_documents(
             page_number=row["page_number"],
             original_filename=row["original_filename"],
             snippet=row["snippet"],
+            extraction_method=row["extraction_method"],
         )
         for row in rows
     ]
