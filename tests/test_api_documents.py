@@ -143,3 +143,123 @@ def test_document_detail_shows_version_history(client: TestClient):
 def test_get_nonexistent_document_returns_404(client: TestClient):
     response = client.get("/documents/99999")
     assert response.status_code == 404
+
+
+def test_upload_without_document_date_leaves_it_unknown(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "iep.txt", b"content")
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+
+    assert document.document_date is None
+    assert document.document_date_source is None
+    assert document.document_date_precision is None
+
+
+def test_upload_with_document_date_records_manual_source(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client, case_id, "iep.txt", b"content", document_date="2024-03-15"
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+
+    assert document.document_date.strftime("%Y-%m-%d") == "2024-03-15"
+    assert document.document_date_source == "manual"
+    assert document.document_date_precision == "exact"
+
+
+def test_upload_with_approximate_document_date(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"content",
+        document_date="2024-03-01",
+        document_date_approximate="true",
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+
+    assert document.document_date_precision == "approximate"
+
+
+def test_upload_with_invalid_document_date_returns_400(client: TestClient):
+    case_id = _create_case(client)
+    response = _upload(client, case_id, "iep.txt", b"content", document_date="not-a-date")
+    assert response.status_code == 400
+
+
+def test_document_detail_page_shows_document_date(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client, case_id, "iep.txt", b"content", document_date="2024-06-01"
+    )
+    detail_url = upload_response.headers["location"]
+
+    response = client.get(detail_url)
+    assert "2024-06-01" in response.text
+
+
+def test_document_detail_page_shows_unknown_when_no_date(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "iep.txt", b"content")
+    detail_url = upload_response.headers["location"]
+
+    response = client.get(detail_url)
+    assert "Unknown / not recorded" in response.text
+
+
+def test_new_version_document_date_is_independent_of_prior_version(
+    client: TestClient, app: FastAPI
+):
+    """A reissued version's date must be entered fresh, never silently
+    inherited from the document it supersedes.
+    """
+    case_id = _create_case(client)
+    v1_response = _upload(
+        client, case_id, "iep-v1.txt", b"v1", document_date="2023-01-10"
+    )
+    v1_id = v1_response.headers["location"].rsplit("/", 1)[-1]
+
+    # Upload a new version with no date entered -- it must NOT inherit v1's date.
+    v2_response = client.post(
+        f"/documents/{v1_id}/new-version",
+        files={"file": ("iep-v2.txt", b"v2", "text/plain")},
+        data={"version_note": "reissued"},
+        follow_redirects=False,
+    )
+    v2_id = int(v2_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        doc_v1 = db.get(Document, int(v1_id))
+        doc_v2 = db.get(Document, v2_id)
+
+    assert doc_v1.document_date.strftime("%Y-%m-%d") == "2023-01-10"
+    assert doc_v2.document_date is None
+
+
+def test_new_version_can_have_its_own_document_date(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    v1_response = _upload(client, case_id, "iep-v1.txt", b"v1", document_date="2023-01-10")
+    v1_id = v1_response.headers["location"].rsplit("/", 1)[-1]
+
+    v2_response = client.post(
+        f"/documents/{v1_id}/new-version",
+        files={"file": ("iep-v2.txt", b"v2", "text/plain")},
+        data={"version_note": "reissued", "document_date": "2024-02-20"},
+        follow_redirects=False,
+    )
+    v2_id = int(v2_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        doc_v2 = db.get(Document, v2_id)
+
+    assert doc_v2.document_date.strftime("%Y-%m-%d") == "2024-02-20"

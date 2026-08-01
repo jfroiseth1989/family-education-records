@@ -19,6 +19,17 @@
       <tr><th>Document ID</th><td>{{ document.document_id }}</td></tr>
       <tr><th>Type</th><td>{{ document.document_type.name if document.document_type else "—" }}</td></tr>
       <tr><th>Source</th><td>{{ document.source or "—" }}</td></tr>
+      <tr>
+        <th>Document date</th>
+        <td>
+          {% if document.document_date %}
+            {{ document.document_date.strftime("%Y-%m-%d") }}
+            ({{ document.document_date_precision }}, source: {{ document.document_date_source }})
+          {% else %}
+            Unknown / not recorded
+          {% endif %}
+        </td>
+      </tr>
       <tr><th>Notes</th><td>{{ document.notes or "—" }}</td></tr>
       <tr><th>Ingested</th><td>{{ document.ingested_at }} by {{ document.ingested_by }}</td></tr>
       <tr><th>File size</th><td>{{ document.file_size_bytes }} bytes</td></tr>
@@ -83,6 +94,19 @@
           Reason for the new version
           <input type="text" name="version_note" maxlength="500" placeholder="e.g. District reissued with corrected evaluation date">
         </label>
+        <label>
+          Document date (of this new version)
+          <input type="date" name="document_date">
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" name="document_date_approximate" value="true">
+          Date is approximate
+        </label>
+        <p class="hint">
+          Entered fresh for this version, not copied from the prior one —
+          a reissued or corrected record often has its own new date. Leave
+          blank if unknown.
+        </p>
         <button type="submit">Ingest as new version</button>
       </form>
     </section>

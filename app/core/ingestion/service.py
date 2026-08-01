@@ -9,15 +9,17 @@ as the document row itself — see docs/ARCHITECTURE.md §3.1.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.custody import write_custody_event
+from app.core.document_dates import set_document_date
 from app.core.files import compute_sha256, copy_into_vault, make_read_only
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document
+from app.db.models import Case, Document, DocumentDatePrecision, DocumentDateSource
 
 
 class DuplicateDocumentError(Exception):
@@ -48,6 +50,8 @@ def ingest_document(
     document_type_id: int | None = None,
     notes: str | None = None,
     mime_type: str | None = None,
+    document_date: date | None = None,
+    document_date_precision: DocumentDatePrecision = DocumentDatePrecision.EXACT,
 ) -> Document:
     """Copy ``source_file_path`` into the vault and register it as a new document.
 
@@ -55,6 +59,17 @@ def ingest_document(
     reading only. Raises :class:`DuplicateDocumentError` (without ingesting
     anything) if a document with the same SHA-256 hash already exists in
     this case.
+
+    ``document_date`` is the date *on* the record itself, entered by
+    whoever is ingesting it — never derived from the source file's OS
+    timestamps, which this function does not read for that purpose (see
+    app/core/document_dates.py). It is optional: leaving it ``None``
+    records the date as unknown/unavailable rather than guessing, which is
+    a fully valid state. When provided here, the date's source is always
+    recorded as "manual" — this is the only entry point for a document
+    date in Phase 1; later phases may set ``DocumentDateSource.EXTRACTED``
+    or ``FILE_METADATA`` through other code paths without changing this
+    function's contract.
 
     Does not commit; the caller controls the transaction boundary (this
     lets API layers batch a request into a single commit).
@@ -88,6 +103,12 @@ def ingest_document(
         document_type_id=document_type_id,
         ingested_by=actor,
         notes=notes,
+    )
+    set_document_date(
+        document,
+        document_date,
+        source=DocumentDateSource.MANUAL,
+        precision=document_date_precision,
     )
     db.add(document)
     db.flush()  # assigns document.document_id before the custody event references it

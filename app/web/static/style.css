@@ -68,6 +68,18 @@ form input, form textarea, form select {
   font: inherit;
 }
 
+form input[type="checkbox"] {
+  display: inline-block;
+  width: auto;
+  margin: 0 0.4rem 0 0;
+  padding: 0;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+}
+
 button {
   padding: 0.45rem 1rem;
   font: inherit;

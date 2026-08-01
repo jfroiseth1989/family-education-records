@@ -63,6 +63,40 @@ class CaseStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
+class DocumentDateSource(str, enum.Enum):
+    """How `Document.document_date` was determined.
+
+    `document_date` is the date *on* the record itself (e.g. the date
+    printed on a letter, the date an evaluation was conducted) — never
+    derived from filesystem metadata or `Document.ingested_at`, which only
+    reflect when this app happened to see the file. See
+    docs/PHASE_1_REVIEW.md item 4 and app/core/document_dates.py.
+
+    Only MANUAL is set anywhere in Phase 1. EXTRACTED and FILE_METADATA are
+    reserved for later phases (automated date suggestion from a document's
+    text, or from a source like an email's Date header) so that adding
+    those sources later is a matter of setting this column to a different
+    value, not a schema change.
+    """
+
+    MANUAL = "manual"
+    EXTRACTED = "extracted"
+    FILE_METADATA = "file_metadata"
+
+
+class DocumentDatePrecision(str, enum.Enum):
+    """How precisely `Document.document_date` is known.
+
+    RANGE is deliberately not included: representing a date range would
+    need a second column (e.g. a range end), which isn't part of this
+    change — see docs/PHASE_1_REVIEW.md item 4 decision log. Add it later
+    if a real need for range dates shows up.
+    """
+
+    EXACT = "exact"
+    APPROXIMATE = "approximate"
+
+
 class Case(Base):
     """A single matter/dispute — the top-level container for its documents."""
 

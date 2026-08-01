@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
@@ -19,7 +20,7 @@ from app.core.custody import verify_document_integrity
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document
+from app.db.models import Case, Document, DocumentDatePrecision
 
 router = APIRouter(tags=["documents"])
 
@@ -52,6 +53,29 @@ def _save_upload_to_temp(upload: UploadFile) -> Path:
         return Path(tmp.name)
 
 
+def _parse_document_date_form(
+    document_date_raw: str, approximate: bool
+) -> tuple[date | None, DocumentDatePrecision]:
+    """Parse the ingestion form's optional date field.
+
+    An empty string means "unknown/unavailable" -- a fully valid choice,
+    not an error -- and is returned as ``None``. A non-empty value that
+    isn't a valid ``YYYY-MM-DD`` date (the format an HTML `<input
+    type="date">` submits) is rejected with a 400 rather than silently
+    ignored, so a typo doesn't quietly discard the date the user entered.
+    """
+    precision = DocumentDatePrecision.APPROXIMATE if approximate else DocumentDatePrecision.EXACT
+    value = document_date_raw.strip()
+    if not value:
+        return None, precision
+    try:
+        return date.fromisoformat(value), precision
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid document date '{value}' (expected YYYY-MM-DD)."
+        ) from exc
+
+
 @router.post("/cases/{case_id}/documents")
 def upload_document(
     request: Request,
@@ -60,6 +84,8 @@ def upload_document(
     source: str = Form(""),
     document_type_id: str = Form(""),
     notes: str = Form(""),
+    document_date: str = Form(""),
+    document_date_approximate: bool = Form(False),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -71,6 +97,9 @@ def upload_document(
         raise HTTPException(status_code=400, detail="A file is required.")
 
     parsed_type_id = int(document_type_id) if document_type_id.strip() else None
+    parsed_date, date_precision = _parse_document_date_form(
+        document_date, document_date_approximate
+    )
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -86,6 +115,8 @@ def upload_document(
                 document_type_id=parsed_type_id,
                 notes=notes.strip() or None,
                 mime_type=file.content_type,
+                document_date=parsed_date,
+                document_date_precision=date_precision,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
@@ -181,6 +212,8 @@ def upload_new_version(
     document_id: int,
     file: UploadFile,
     version_note: str = Form(""),
+    document_date: str = Form(""),
+    document_date_approximate: bool = Form(False),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -191,11 +224,21 @@ def upload_new_version(
     document is never modified, and the new file becomes its own
     independent document row before being linked — see
     app/core/ingestion/versioning.py.
+
+    The new version's document date is entered fresh here, not copied from
+    the prior version: a reissued or corrected record often carries a new
+    effective date (e.g. the date it was reissued), so silently inheriting
+    the old one could record the wrong date rather than an honestly
+    "unknown" one.
     """
     existing_document = _get_document_or_404(db, document_id)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="A file is required.")
+
+    parsed_date, date_precision = _parse_document_date_form(
+        document_date, document_date_approximate
+    )
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -210,6 +253,8 @@ def upload_new_version(
                 source=existing_document.source,
                 document_type_id=existing_document.document_type_id,
                 mime_type=file.content_type,
+                document_date=parsed_date,
+                document_date_precision=date_precision,
             )
         except DuplicateDocumentError as exc:
             db.rollback()

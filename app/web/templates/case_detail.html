@@ -55,6 +55,19 @@
         <input type="text" name="source" maxlength="300" placeholder="e.g. emailed by district">
       </label>
       <label>
+        Document date
+        <input type="date" name="document_date">
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="document_date_approximate" value="true">
+        Date is approximate
+      </label>
+      <p class="hint">
+        The date on the record itself (e.g. the date printed on a letter or
+        evaluation) — not today's date. Leave blank if unknown; that's
+        recorded as "unknown," not guessed.
+      </p>
+      <label>
         Notes
         <textarea name="notes" rows="2"></textarea>
       </label>
@@ -67,7 +80,7 @@
     {% if documents %}
       <table class="data-table">
         <thead>
-          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Ingested</th><th>SHA-256</th></tr>
+          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Document date</th><th>Ingested</th><th>SHA-256</th></tr>
         </thead>
         <tbody>
           {% for doc in documents %}
@@ -84,6 +97,14 @@
                   {% endif %}
                 {% else %}
                   —
+                {% endif %}
+              </td>
+              <td>
+                {% if doc.document_date %}
+                  {{ doc.document_date.strftime("%Y-%m-%d") }}
+                  {% if doc.document_date_precision == "approximate" %}(approx.){% endif %}
+                {% else %}
+                  <span class="empty-state">unknown</span>
                 {% endif %}
               </td>
               <td>{{ doc.ingested_at }}</td>
