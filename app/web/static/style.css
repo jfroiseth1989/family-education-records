@@ -198,6 +198,23 @@ button {
   margin: 0 0 1rem;
 }
 
+.ocr-review-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.ocr-review-layout > div {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.ocr-review-layout img {
+  max-width: 100%;
+  border: 1px solid var(--border, #ccc);
+}
+
 .annotation-list li {
   padding: 0.4rem 0;
   border-bottom: 1px solid var(--border);

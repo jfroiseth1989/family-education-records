@@ -93,6 +93,11 @@
         </td>
       </tr>
     </table>
+    {% if document.needs_ocr %}
+      <p>
+        <a href="/documents/{{ document.document_id }}/ocr-review">Review / correct OCR text</a>
+      </p>
+    {% endif %}
     {% if pages %}
       <table class="data-table">
         <thead><tr><th>Page</th><th>Method</th><th>Characters</th><th>Needs OCR</th></tr></thead>

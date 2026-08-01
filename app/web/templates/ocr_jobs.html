@@ -17,7 +17,12 @@
         <tbody>
           {% for job in jobs %}
             <tr>
-              <td><a href="/documents/{{ job.document_id }}">{{ job.document.original_filename }}</a></td>
+              <td>
+                <a href="/documents/{{ job.document_id }}">{{ job.document.original_filename }}</a>
+                {% if job.status in ("completed", "completed_with_errors") %}
+                  &nbsp;·&nbsp;<a href="/documents/{{ job.document_id }}/ocr-review">Review</a>
+                {% endif %}
+              </td>
               <td>
                 {% if job.status == "completed" %}
                   <span class="status-badge status-current">Completed</span>

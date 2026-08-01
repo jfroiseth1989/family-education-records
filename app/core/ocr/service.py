@@ -140,3 +140,21 @@ def _render_pdf_page_to_image(pdf_path: Path, page_number: int, tmp_dir: Path) -
         image_path = tmp_dir / f"page-{page_number}.png"
         pixmap.save(str(image_path))
     return image_path
+
+
+def render_pdf_page_to_png_bytes(pdf_path: Path, page_number: int) -> bytes:
+    """Render one 1-indexed PDF page to PNG bytes, for the OCR review UI.
+
+    Separate from `_render_pdf_page_to_image` above (which writes to a
+    temp file for pytesseract's file-path-based API): this one returns
+    bytes directly, since an HTTP response has no use for a file that
+    outlives the request, and a `TemporaryDirectory` would close before
+    `FileResponse` could stream from it. Opens the stored original
+    read-only, same as every other OCR/extraction path.
+    """
+    import fitz  # local import: keeps the PDF dependency's use scoped to this one path
+
+    with fitz.open(pdf_path) as pdf:
+        page = pdf[page_number - 1]
+        pixmap = page.get_pixmap()
+        return pixmap.tobytes("png")

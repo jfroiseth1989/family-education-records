@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}OCR review — {{ document.original_filename }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/documents/{{ document.document_id }}">&larr; {{ document.original_filename }}</a></p>
+  <h1>OCR review — {{ document.original_filename }} <span class="meta">— page {{ current_number }}</span></h1>
+  <p class="hint">
+    Only pages flagged "needs OCR" appear here. Corrections never modify
+    the stored original file or the raw OCR text underneath — they add a
+    new, permanently retained layer that search and future citations use
+    going forward. Citations already made before a correction are never
+    changed retroactively.
+  </p>
+
+  <p class="page-nav">
+    {% for n in page_numbers %}
+      {% if n == current_number %}
+        <strong>{{ n }}</strong>
+      {% else %}
+        <a href="/documents/{{ document.document_id }}/ocr-review?page={{ n }}">{{ n }}</a>
+      {% endif %}
+    {% endfor %}
+  </p>
+
+  <section class="panel">
+    <h2>Page {{ current_number }}</h2>
+    <div class="ocr-review-layout">
+      <div>
+        <img src="/documents/{{ document.document_id }}/pages/{{ current_number }}/image" alt="Page {{ current_number }} image">
+      </div>
+      <div>
+        <table class="kv-table">
+          <tr><th>Source</th><td>{{ effective.source }}</td></tr>
+          <tr><th>Confidence</th><td>{{ "%.1f"|format(effective.confidence) if effective.confidence is not none else "—" }}</td></tr>
+        </table>
+        <pre>{{ effective.text or "(no text recognized)" }}</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Correct this page's text</h2>
+    <p class="hint">
+      Pre-filled with the text currently shown above. Submitting a
+      correction supersedes it for search and any future citation — it
+      does not overwrite the raw OCR output, which stays available in
+      the chain of custody.
+    </p>
+    <form method="post" action="/documents/{{ document.document_id }}/ocr-review/pages/{{ current_number }}/correct">
+      <label>
+        Corrected text
+        <textarea name="corrected_text" rows="8" required>{{ effective.text or "" }}</textarea>
+      </label>
+      <button type="submit" {{ "disabled" if effective.text is none else "" }}>Save correction</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Correction history — page {{ current_number }}</h2>
+    {% if corrections %}
+      <table class="data-table">
+        <thead><tr><th>Corrected text</th><th>By</th><th>At</th></tr></thead>
+        <tbody>
+          {% for c in corrections %}
+            <tr>
+              <td>{{ c.corrected_text }}</td>
+              <td>{{ c.corrected_by }}</td>
+              <td>{{ c.corrected_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No corrections on this page yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Reprocess this document</h2>
+    <p class="hint">
+      Re-runs OCR for every page of this document that still needs it —
+      not just the page shown above. This is manual only; nothing
+      re-runs OCR automatically.
+    </p>
+    {% if reprocess_active %}
+      <p class="empty-state">OCR is already queued or running for this document.</p>
+    {% else %}
+      <form method="post" action="/documents/{{ document.document_id }}/ocr-review/reprocess?page={{ current_number }}">
+        {% if has_any_corrections %}
+          <p class="hint">
+            <strong>Warning:</strong> this document has at least one saved
+            correction. Reprocessing replaces the raw OCR text a new
+            correction would be compared against, but never touches or
+            removes any correction already saved — those remain exactly
+            as recorded, and existing citations are still never affected.
+          </p>
+          <label>
+            <input type="checkbox" required>
+            I understand existing corrections are not affected and want to reprocess anyway.
+          </label>
+        {% endif %}
+        <button type="submit">Reprocess document</button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}
