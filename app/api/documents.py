@@ -177,7 +177,7 @@ def upload_document(
 
 @router.get("/documents/{document_id}", response_class=HTMLResponse)
 def get_document(
-    request: Request, document_id: int, db: Session = Depends(get_db)
+    request: Request, document_id: int, date_scan: int | None = None, db: Session = Depends(get_db)
 ) -> HTMLResponse:
     """Render a document's detail page: metadata, custody log, and version history."""
     document = _get_document_or_404(db, document_id)
@@ -219,6 +219,7 @@ def get_document(
             "document_tags": document_tags,
             "case_tags": case_tags,
             "annotation_counts": annotation_counts,
+            "date_scan_result": date_scan,
         },
     )
 

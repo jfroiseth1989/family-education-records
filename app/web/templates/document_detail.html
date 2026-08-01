@@ -123,6 +123,28 @@
   </section>
 
   <section class="panel">
+    <h2>Fact extraction</h2>
+    {% if date_scan_result is not none %}
+      <p class="hint">
+        {% if date_scan_result > 0 %}
+          Found {{ date_scan_result }} new possible date{{ "s" if date_scan_result != 1 else "" }} — pending human review.
+        {% else %}
+          No new dates found (already-observed spans are skipped on repeat scans).
+        {% endif %}
+      </p>
+    {% endif %}
+    <p class="hint">
+      Scans this document's text for date-like substrings using fixed
+      patterns only — no AI or cloud service. Each match becomes a
+      pending observation, citing the exact text it was found in,
+      awaiting your review before it becomes a usable fact.
+    </p>
+    <form method="post" action="/documents/{{ document.document_id }}/facts/scan-dates">
+      <button type="submit">Scan for date observations</button>
+    </form>
+  </section>
+
+  <section class="panel">
     <h2>Annotations</h2>
     <p>
       {{ annotation_counts.highlight }} highlight{{ "s" if annotation_counts.highlight != 1 else "" }},
