@@ -21,6 +21,7 @@ from app.core.document_dates import InvalidDateRangeError
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
+from app.core.tagging import list_case_tags
 from app.core.vault import VaultLayout
 from app.db.models import Case, Document, DocumentDatePrecision
 
@@ -187,6 +188,9 @@ def get_document(
         key=lambda d: d.original_filename.lower(),
     )
 
+    document_tags = sorted((link.tag for link in document.tag_links), key=lambda t: t.name.lower())
+    case_tags = list_case_tags(db, document.case_id)
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -197,6 +201,8 @@ def get_document(
             "version_siblings": version_siblings,
             "other_case_documents": other_case_documents,
             "pages": sorted(document.pages, key=lambda p: p.page_number),
+            "document_tags": document_tags,
+            "case_tags": case_tags,
         },
     )
 

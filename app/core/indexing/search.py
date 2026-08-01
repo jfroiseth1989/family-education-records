@@ -36,6 +36,7 @@ def search_case_documents(
     needs_ocr: bool | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    tag_id: int | None = None,
     limit: int = 50,
 ) -> list[SearchResult]:
     """Search extracted text within one case, with optional filters.
@@ -62,6 +63,13 @@ def search_case_documents(
     if needs_ocr is not None:
         conditions.append("d.needs_ocr = :needs_ocr")
         params["needs_ocr"] = needs_ocr
+
+    if tag_id is not None:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM document_tags dt "
+            "WHERE dt.document_id = d.document_id AND dt.tag_id = :tag_id)"
+        )
+        params["tag_id"] = tag_id
 
     date_condition = _build_date_range_condition(date_from, date_to, params)
     if date_condition:

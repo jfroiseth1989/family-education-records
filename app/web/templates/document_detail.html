@@ -115,6 +115,44 @@
     </p>
   </section>
 
+  <section class="panel">
+    <h2>Tags</h2>
+    {% if document_tags %}
+      <p>
+        {% for tag in document_tags %}
+          <span class="tag-badge">
+            {{ tag.name }}{% if tag.category %} <span class="tag-category">({{ tag.category }})</span>{% endif %}
+            <form method="post" action="/documents/{{ document.document_id }}/tags/{{ tag.tag_id }}/remove" style="display:inline">
+              <button type="submit" class="tag-remove" title="Remove tag">&times;</button>
+            </form>
+          </span>
+        {% endfor %}
+      </p>
+    {% else %}
+      <p class="empty-state">No tags yet.</p>
+    {% endif %}
+    <form method="post" action="/documents/{{ document.document_id }}/tags">
+      <label>
+        Tag name
+        <input type="text" name="name" list="case-tag-names" maxlength="100" required placeholder="e.g. IEP, transportation, urgent">
+      </label>
+      <datalist id="case-tag-names">
+        {% for tag in case_tags %}
+          <option value="{{ tag.name }}">
+        {% endfor %}
+      </datalist>
+      <label>
+        Category (optional)
+        <input type="text" name="category" maxlength="100" placeholder="e.g. record-type, priority">
+      </label>
+      <p class="hint">
+        Adding a tag that already exists in this case (case-insensitive)
+        reuses it rather than creating a duplicate.
+      </p>
+      <button type="submit">Add tag</button>
+    </form>
+  </section>
+
   {% if version_siblings %}
     <section class="panel">
       <h2>Version history</h2>

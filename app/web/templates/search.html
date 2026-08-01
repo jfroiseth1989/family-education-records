@@ -28,6 +28,15 @@
         </select>
       </label>
       <label>
+        Tag
+        <select name="tag_id">
+          <option value="">(any)</option>
+          {% for tag in case_tags %}
+            <option value="{{ tag.tag_id }}" {% if tag.tag_id == selected_tag_id %}selected{% endif %}>{{ tag.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
         Document date from
         <input type="date" name="date_from" value="{{ date_from }}">
       </label>

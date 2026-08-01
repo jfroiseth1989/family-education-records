@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.extraction.service import extract_document
 from app.core.indexing.search import _quote_as_phrase, search_case_documents
 from app.core.ingestion.service import ingest_document
+from app.core.tagging import tag_document
 from app.db.models import Case, DocumentDatePrecision
 from app.core.vault import VaultLayout
 
@@ -258,3 +259,73 @@ def test_search_documents_without_a_date_are_excluded_by_date_filter(
         date_from=date(2020, 1, 1), date_to=date(2030, 1, 1),
     )
     assert results == []
+
+
+# --- tag filter ------------------------------------------------------
+
+
+def test_search_filters_by_tag(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    pdf_tagged = tmp_path / "tagged.pdf"
+    _make_pdf(pdf_tagged, "shared keyword for tag filtering")
+    tagged_doc = _ingest_and_extract(db_session, vault, sample_case, pdf_tagged, "tagged.pdf")
+    tag = tag_document(db_session, tagged_doc, "IEP", actor="test-user")
+    db_session.commit()
+
+    pdf_untagged = tmp_path / "untagged.pdf"
+    _make_pdf(pdf_untagged, "shared keyword for tag filtering")
+    _ingest_and_extract(db_session, vault, sample_case, pdf_untagged, "untagged.pdf")
+
+    results = search_case_documents(
+        db_session, sample_case.case_id, "shared keyword", tag_id=tag.tag_id
+    )
+    assert len(results) == 1
+    assert results[0].original_filename == "tagged.pdf"
+
+
+def test_search_tag_filter_excludes_documents_with_a_different_tag(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    pdf_path = tmp_path / "doc.pdf"
+    _make_pdf(pdf_path, "another shared keyword here")
+    document = _ingest_and_extract(db_session, vault, sample_case, pdf_path, "doc.pdf")
+    tag_document(db_session, document, "IEP", actor="test-user")
+    db_session.commit()
+
+    # A tag_id that exists but isn't attached to this document.
+    from app.core.tagging import find_or_create_tag
+
+    other_tag = find_or_create_tag(db_session, sample_case, "Correspondence")
+    db_session.commit()
+
+    results = search_case_documents(
+        db_session, sample_case.case_id, "another shared", tag_id=other_tag.tag_id
+    )
+    assert results == []
+
+
+def test_search_tag_filter_combined_with_other_filters(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    from app.db.models import DocumentType
+
+    iep_type = db_session.query(DocumentType).filter_by(name="IEP").one()
+
+    pdf_path = tmp_path / "doc.pdf"
+    _make_pdf(pdf_path, "combined filters keyword")
+    document = _ingest_and_extract(
+        db_session, vault, sample_case, pdf_path, "doc.pdf", document_type_id=iep_type.type_id
+    )
+    tag = tag_document(db_session, document, "urgent", actor="test-user")
+    db_session.commit()
+
+    results = search_case_documents(
+        db_session,
+        sample_case.case_id,
+        "combined filters",
+        tag_id=tag.tag_id,
+        document_type_id=iep_type.type_id,
+        needs_ocr=False,
+    )
+    assert len(results) == 1

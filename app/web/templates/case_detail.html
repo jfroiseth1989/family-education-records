@@ -89,7 +89,7 @@
     {% if documents %}
       <table class="data-table">
         <thead>
-          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Extraction</th><th>Document date</th><th>Ingested</th><th>SHA-256</th></tr>
+          <tr><th>Filename</th><th>Type</th><th>Version</th><th>Extraction</th><th>Tags</th><th>Document date</th><th>Ingested</th><th>SHA-256</th></tr>
         </thead>
         <tbody>
           {% for doc in documents %}
@@ -122,6 +122,13 @@
                 {% else %}
                   <span class="status-badge">Pending</span>
                 {% endif %}
+              </td>
+              <td>
+                {% for link in doc.tag_links %}
+                  <span class="tag-badge">{{ link.tag.name }}</span>
+                {% else %}
+                  <span class="empty-state">none</span>
+                {% endfor %}
               </td>
               <td>
                 {% if doc.document_date %}

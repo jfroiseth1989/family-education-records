@@ -1,16 +1,18 @@
 """SQLAlchemy ORM models.
 
-Scope note: implements the tables built through Phase 2 Step 1 — case
+Scope note: implements the tables built through Phase 2 Step 3 — case
 management, document ingestion, version tracking, chain of custody
-(Phase 1), plus extraction status and the `document_pages`/`citations`
-traceability primitives (Phase 2 Step 1, see docs/PHASE_2_PLAN.md).
-Tables for later phases (OCR text population, facts/observations, the
-relationship graph, annotations, tags, search, etc.) are intentionally
-not created yet. docs/DATA_MODEL.md is the authoritative full target
-schema; each later phase's migration builds toward it incrementally,
-which is exactly what the lookup-table / EAV-metadata extensibility
-design in that document is for — adding a table or column later is
-additive, not a redesign.
+(Phase 1); extraction status and the `document_pages`/`citations`
+traceability primitives (Step 1); the `document_text_fts` search index
+(Step 2, defined in a hand-written migration, not here — see
+app/db/migrations/versions/08c778ee32af_*.py); and case-scoped tags
+(Step 3). Tables for later phases (OCR text population,
+facts/observations, the relationship graph, annotations, etc.) are
+intentionally not created yet. docs/DATA_MODEL.md is the authoritative
+full target schema; each later phase's migration builds toward it
+incrementally, which is exactly what the lookup-table / EAV-metadata
+extensibility design in that document is for — adding a table or column
+later is additive, not a redesign.
 
 Every table here traces to a specific requirement discussed and approved
 before implementation began:
@@ -36,7 +38,10 @@ before implementation began:
                                   primitive every later phase (facts,
                                   timeline, relationship graph) cites
                                   through exclusively (§12.4). Not yet
-                                  written by any UI action in Step 1.
+                                  written by any UI action in Step 1-3.
+  - `tags` / `document_tags`   — case-scoped labels a user attaches to
+                                  documents (Phase 2 Step 3). No rename or
+                                  delete UI yet — see the Tag docstring.
 """
 
 from __future__ import annotations
@@ -311,6 +316,9 @@ class Document(Base):
         cascade="all, delete-orphan",
         order_by="DocumentPage.page_number",
     )
+    tag_links: Mapped[list["DocumentTag"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
 
 
 class DocumentCustodyEvent(Base):
@@ -413,6 +421,55 @@ class Citation(Base):
 
     document: Mapped["Document"] = relationship()
     page: Mapped["DocumentPage | None"] = relationship()
+
+
+class Tag(Base):
+    """A case-scoped label a user can attach to documents.
+
+    See docs/DATA_MODEL.md "tags" / "document_tags" and
+    docs/PHASE_2_PLAN.md §13 Step 3. Tags are scoped per case (not
+    global) and case-insensitively unique within a case, enforced by the
+    application layer (see app/core/tagging.py) with this table's
+    case-sensitive unique constraint as a database-level backstop. No
+    rename/delete UI exists in Step 3 — a tag persists even once no
+    document uses it; cleanup is deliberately out of scope for now.
+    """
+
+    __tablename__ = "tags"
+    __table_args__ = (UniqueConstraint("case_id", "name", name="uq_tag_case_name"),)
+
+    tag_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    case: Mapped["Case"] = relationship()
+
+
+class DocumentTag(Base):
+    """The many-to-many link between a document and a tag.
+
+    A pure association row (composite primary key, no surrogate id) plus
+    a timestamp — deliberately not a richer "tagging event" record, since
+    app/core/tagging.py already writes a `tagged`/`untagged` custody
+    event on the document for that purpose.
+    """
+
+    __tablename__ = "document_tags"
+
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), primary_key=True
+    )
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.tag_id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    document: Mapped["Document"] = relationship(back_populates="tag_links")
+    tag: Mapped["Tag"] = relationship()
 
 
 class AuditLog(Base):

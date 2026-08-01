@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.indexing.search import search_case_documents
+from app.core.tagging import list_case_tags
 from app.db.models import Case, DocumentType
 
 router = APIRouter(tags=["search"])
@@ -48,6 +49,7 @@ def search_case(
     needs_ocr: str = Query(""),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    tag_id: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """Render the search form and, if a query is present, its results."""
@@ -59,6 +61,7 @@ def search_case(
     )
     parsed_date_from = _parse_optional_date(date_from.strip() or None, "date_from")
     parsed_date_to = _parse_optional_date(date_to.strip() or None, "date_to")
+    parsed_tag_id = int(tag_id) if tag_id.strip() else None
 
     results = search_case_documents(
         db,
@@ -68,11 +71,13 @@ def search_case(
         needs_ocr=parsed_needs_ocr,
         date_from=parsed_date_from,
         date_to=parsed_date_to,
+        tag_id=parsed_tag_id,
     )
 
     document_types = db.scalars(
         select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)
     ).all()
+    case_tags = list_case_tags(db, case_id)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -87,6 +92,8 @@ def search_case(
             "selected_needs_ocr": needs_ocr,
             "date_from": date_from,
             "date_to": date_to,
+            "case_tags": case_tags,
+            "selected_tag_id": parsed_tag_id,
             "searched": bool(q.strip()),
         },
     )
