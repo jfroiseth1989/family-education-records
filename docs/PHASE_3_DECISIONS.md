@@ -577,6 +577,92 @@ reconstructable from four independent, mutually reinforcing records —
 the same layered-redundancy approach already used for hash verification
 throughout this app, applied here to OCR text specifically.
 
+## 10. Second round of final clarifications
+
+Three more confirmations requested before approval, on top of §9's three.
+
+### 10.1 OCR history retention
+
+**Are old OCR versions retained indefinitely?** Yes, by construction —
+`ocr_text_history` and `ocr_corrections` are both append-only (§9.3);
+nothing in this plan ever issues a `DELETE` against either table. Once a
+raw OCR value or a correction exists, it's permanent, the same way every
+other ledger in this schema is (`document_custody_events`, `audit_log`).
+
+**Is there any cleanup/archive policy?** No, none exists or is proposed.
+This is a deliberate consistency choice, not an oversight: no table in
+this schema has a retention/expiry policy anywhere — not
+`document_custody_events`, not `audit_log`, not (after Phase 2)
+`ocr_corrections`'s sibling in spirit, `annotation_notes_fts`'s
+underlying `annotations` table (soft-deleted, never purged). Introducing
+one uniquely for OCR history would be new, unrequested complexity, and
+would sit awkwardly against `docs/DATA_MODEL.md` design principle #3
+("nothing is hard-deleted") applied to every other ledger in this app.
+
+Practically: this app's scale is one family's set of case records, not a
+high-volume system — even a heavily-corrected, repeatedly-reprocessed
+document accumulates a bounded, small number of extra rows, in a SQLite
+file living on local disk. Unbounded-growth risk here is theoretical, not
+a real operational concern at this scale. If that judgment ever changes
+(e.g., a specific reason emerges to prune history), that's a future,
+explicit decision to make with a real reason behind it — not something to
+design against speculatively now.
+
+### 10.2 Relationship between `document_pages.ocr_text`, `ocr_text_history`, and `ocr_corrections`
+
+The likely source of any ambiguity is that "current" can mean two
+different things — "current *raw machine output*" versus "current *best-
+known, effective* text." This plan keeps those explicitly separate:
+
+| | Holds | Is it "current"? |
+|---|---|---|
+| `document_pages.ocr_text` | The most recent raw OCR run's output for this page — always machine-original, **never** edited by a correction | Yes — current *raw OCR*, specifically. This is not the same as "current effective text" if a correction exists. |
+| `ocr_text_history` | Every *prior* raw OCR value this page had, archived immediately before each reprocess overwrote it | No — pure historical record. Never read by anything computing "what should be shown/searched/cited right now." |
+| `ocr_corrections` | Every correction ever made to this page, append-only | The *latest row* (by `corrected_at`) is the current correction, if any exists. Older rows are historical. Nothing marks a row "current" with a flag — it's derived by querying for the most recent one. |
+
+**The single value anything actually treats as "this page's real text right
+now" is `effective_text(page)`** (§3 of `docs/PHASE_3_IMPLEMENTATION_PLAN.md`,
+implemented once in `app/core/ocr/text.py`):
+
+```
+effective_text(page) =
+    latest ocr_corrections row for this page, if one exists
+    else document_pages.ocr_text   (current raw OCR)
+    else document_pages.extracted_text   (native)
+    else None
+```
+
+`ocr_text_history` and every non-latest `ocr_corrections` row are
+**never** inputs to this function — they exist solely for audit/history
+display (e.g., a "view correction/OCR history" panel in the review UI),
+not for deciding what the viewer, search index, or a new citation should
+treat as the page's text.
+
+### 10.3 Citation behavior — re-confirmed
+
+**Citations always point to the exact text state that existed when they
+were created.** Three fields, all set once, at citation creation, and
+never touched again:
+- `quoted_text` — the literal excerpt (already the existing,
+  Phase 2-locked design: "stored redundantly for display/audit even if
+  underlying text is later re-extracted," `docs/DATA_MODEL.md`).
+- `text_source` — `native` / `ocr_raw` / `ocr_corrected`, which of the
+  three text states in §10.2 actually supplied this excerpt.
+- `source_confidence` — the OCR confidence at that moment, if applicable.
+
+Together these three fields make a citation fully self-contained: reading
+one never requires looking up the page's *current* state to know what it
+originally quoted, why, or how reliable that source was at the time.
+
+**Re-OCR or correction never silently changes an existing citation** —
+restated from §9.2 because it's worth confirming twice at this stakes
+level: verified empirically (not just by design) that exactly one code
+site in this entire codebase ever constructs a `Citation`
+(`create_highlight()`), there is no edit route, and nothing in this plan
+adds a second write path. A correction or reprocess changes what
+`effective_text(page)` will resolve to for the *next* citation made on
+that page — it has zero effect on any citation already made.
+
 ## Confirmation: no Phase 3 code has started
 
 Re-checked directly this session, not asserted from memory:

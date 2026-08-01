@@ -143,6 +143,17 @@ its custody ledger alone, independent of current table state.
   independent, mutually reinforcing records of a page's OCR history, the
   same layered-redundancy approach already used for hash verification
   throughout this app.
+- **Retention: indefinite, no cleanup/archive policy** — consistent with
+  every other ledger in this schema (`document_custody_events`,
+  `audit_log`); see `docs/PHASE_3_DECISIONS.md` §10.1 for the full
+  reasoning. Not something to revisit without a concrete, specific reason.
+- **Current vs. historical, explicitly** (§10.2 of the decisions doc):
+  `document_pages.ocr_text` is the current *raw* OCR value — never
+  edited by a correction. `ocr_text_history` and every non-latest
+  `ocr_corrections` row are pure historical record, read only for
+  audit/history display, never consulted by `effective_text()` (§3
+  above), which is the one function anything uses to decide "what is
+  this page's real text right now."
 
 ## 8. Search integration — final statement
 
@@ -207,7 +218,47 @@ $ alembic heads
 d93ac0658fac (head)   # Phase 2 Step 5's migration — no Phase 3 migration exists
 ```
 
+## 11. Approval-ready confirmation
+
+Everything below is settled, cross-checked, and ready for a go/no-go —
+nothing here is a new open question:
+
+- **Scope and boundaries** — `docs/PHASE_3_PLAN.md` §3. In/out lists
+  unchanged since first drafted; no scope creep introduced by any of the
+  clarification rounds.
+- **All seven original decisions** — `docs/PHASE_3_DECISIONS.md` §§1–7 —
+  raw/corrected storage, citation distinguishability, search ranking,
+  Tesseract handling, language config, bounding-box capture, retry
+  policy. All resolved.
+- **First clarification round** (§9 of the decisions doc) — citation
+  migration backfill mechanics, citation immutability (verified
+  empirically), and the `ocr_text_history` addition that closes the raw-
+  OCR-recoverability gap the check itself surfaced.
+- **Second clarification round** (§10 of the decisions doc) — indefinite
+  retention with no cleanup policy (consistent with every other ledger in
+  this schema), the explicit current-vs-historical relationship between
+  `document_pages.ocr_text` / `ocr_text_history` / `ocr_corrections`, and
+  a second, independent confirmation that citations are immutable and
+  re-OCR/correction never touches one silently.
+- **Final schema** — §2 above: 2 columns first-written on existing
+  tables (already migrated since Phase 2 Step 1), 2 new columns on
+  `citations` (1 new `ALTER`), 1 new column on `document_pages`, 4 new
+  tables.
+- **Migration plan** — §4 above: four migrations, ordered, each to be
+  hand-inspected for the standing FTS5 autogenerate hazard before
+  applying.
+- **Background job architecture, failure/retry handling, search
+  integration** — §§5, 6, 8 above — all finalized, no open items.
+- **Proposed step breakdown** — §9 above: five steps (job queue → OCR
+  execution core → search integration → correction layer → review UI),
+  same implement-one-pause-for-review process as every Phase 2 step.
+- **No Phase 3 code, schema, or dependency exists** — reconfirmed
+  directly this session, §10 above.
+
+**Nothing is pending on my side.** The plan is ready to implement exactly
+as written, starting with Step 0, the moment you give the go-ahead.
+
 ---
 
 Holding here. No Phase 3 schema, code, or dependency will be added until
-you approve this plan and its step breakdown.
+you give explicit approval to begin implementation.
