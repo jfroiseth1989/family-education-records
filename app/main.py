@@ -81,7 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # app.state so a future graceful-shutdown hook can use it.
         stop_event = threading.Event()
         worker_thread = threading.Thread(
-            target=run_worker_loop, args=(session_factory, stop_event), daemon=True
+            target=run_worker_loop, args=(session_factory, vault, stop_event), daemon=True
         )
         worker_thread.start()
         app.state.ocr_worker_thread = worker_thread

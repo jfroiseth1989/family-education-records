@@ -1,39 +1,46 @@
-"""The OCR job queue's worker: claim, process, finish -- plus startup
+"""The OCR job queue's worker: claim, run, record, finish -- plus startup
 crash recovery.
 
-See docs/PHASE_3_IMPLEMENTATION_PLAN.md Step 0. This is the app's first
-background execution model -- every prior phase was entirely synchronous,
-in-request. A single in-process worker (one job at a time; no concurrency
-tuning needed for a single-user, single-machine tool) pulls queued
-`ocr_jobs` rows FIFO by `queued_at`.
+See docs/PHASE_3_IMPLEMENTATION_PLAN.md Steps 0-1. This is the app's
+first background execution model -- every prior phase was entirely
+synchronous, in-request. A single in-process worker (one job at a time;
+no concurrency tuning needed for a single-user, single-machine tool)
+pulls queued `ocr_jobs` rows FIFO by `queued_at`.
 
-**Step 0 placeholder note:** real OCR execution (`app/core/ocr/service.py`,
-Tesseract, `document_pages.ocr_text` writes) does not exist yet -- that is
-Step 1. `_run_step0_placeholder` below exists solely to prove the queue
-mechanics (claim, run, finish, crash recovery) work correctly before any
-real OCR code exists. It does not touch `document_pages` and does not log
-an `ocr_completed`/`ocr_failed` custody event -- doing so would misrepresent
-a fake, no-op run as a real OCR action. Only the genuine `ocr_queued` event
-(logged at enqueue time, see app/core/ocr/queue.py) exists in Step 0.
-Step 1 replaces the call site in `process_next_job` with real execution
-and adds the corresponding custody events at that point.
+This module owns every job-lifecycle side effect -- claiming, finishing,
+and the `ocr_completed`/`ocr_failed` custody event -- while
+`app/core/ocr/service.py::run_ocr_job()` owns only the OCR content work
+itself and returns a plain result. That split (rather than having
+`run_ocr_job()` finish its own job) keeps this module import-free of a
+cycle: `service.py` never needs to import anything from here.
+
+Real OCR execution replaced Step 0's queue-mechanics placeholder in this
+step -- the custody event now reflects a genuine action, not a fake one.
+The actor recorded is a fixed, clearly-labeled system identity
+(`SYSTEM_ACTOR`), never a human name -- there is no HTTP request or user
+session behind a background job the way there is for `enqueue_ocr_job`,
+which correctly still uses the uploading user's own actor name.
 """
 
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.custody import write_custody_event
+from app.core.ocr.service import run_ocr_job
+from app.core.vault import VaultLayout
 from app.db.models import OcrJob
 
 # Mirrors ocr_jobs.status's vocabulary -- see the OcrJob model docstring.
 _ACTIVE_STATUSES = ("queued", "running")
 
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+
+SYSTEM_ACTOR = "system (OCR background worker)"
 
 
 def claim_next_job(db: Session) -> OcrJob | None:
@@ -61,9 +68,10 @@ def claim_next_job(db: Session) -> OcrJob | None:
 def finish_job(db: Session, job: OcrJob, *, status: str, error: str | None = None) -> None:
     """Record a job's final status and commit.
 
-    No custody event is written here in Step 0 -- see the module
-    docstring. Step 1 adds `ocr_completed`/`ocr_failed`/
-    `completed_with_errors` custody logging alongside real execution.
+    Any custody event for this outcome must be added to the session
+    *before* calling this -- see process_next_job -- so it lands in the
+    same commit as the status change, never a separate one that could be
+    lost to a crash between the two.
     """
     job.status = status
     job.finished_at = datetime.now(timezone.utc)
@@ -72,24 +80,26 @@ def finish_job(db: Session, job: OcrJob, *, status: str, error: str | None = Non
     db.commit()
 
 
-def _run_step0_placeholder(job: OcrJob) -> tuple[str, str | None]:
-    """Temporary stand-in for real OCR execution -- see module docstring.
-
-    Does nothing but prove a job can be "processed" end-to-end. Replaced
-    by real Tesseract execution in Step 1.
-    """
-    job.engine = "phase3-step0-placeholder"
-    return "completed", None
-
-
-def process_next_job(db: Session) -> OcrJob | None:
-    """Claim and process one job, if any is queued. Returns it, or None."""
+def process_next_job(db: Session, vault: VaultLayout) -> OcrJob | None:
+    """Claim and run one job, if any is queued. Returns it, or None."""
     job = claim_next_job(db)
     if job is None:
         return None
 
-    status, error = _run_step0_placeholder(job)
-    finish_job(db, job, status=status, error=error)
+    result = run_ocr_job(db, vault, job)
+
+    write_custody_event(
+        db,
+        job.document,
+        event_type="ocr_failed" if result.status == "failed" else "ocr_completed",
+        actor=SYSTEM_ACTOR,
+        details={
+            "job_id": job.job_id,
+            "pages_ocred": result.pages_ocred,
+            "pages_failed": result.pages_failed,
+        },
+    )
+    finish_job(db, job, status=result.status, error=result.error)
     return job
 
 
@@ -98,9 +108,10 @@ def sweep_stuck_jobs(db: Session) -> int:
 
     Run once at app startup, before serving requests -- see
     app/main.py::create_app. Any pages a real OCR run had already written
-    before the crash are untouched (Step 1+); this only corrects the
-    job's own status so it isn't silently stuck `running` forever with no
-    way to observe or retry it.
+    before the crash are untouched -- run_ocr_job()/finish_job() commit
+    together, so an interrupted run never leaves a half-written page
+    committed; this only corrects the job's own status so it isn't
+    silently stuck `running` forever with no way to observe or retry it.
     """
     stuck_jobs = db.scalars(select(OcrJob).where(OcrJob.status == "running")).all()
     for job in stuck_jobs:
@@ -112,6 +123,7 @@ def sweep_stuck_jobs(db: Session) -> int:
 
 def run_worker_loop(
     session_factory: sessionmaker[Session],
+    vault: VaultLayout,
     stop_event: threading.Event,
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
 ) -> None:
@@ -124,7 +136,7 @@ def run_worker_loop(
     while not stop_event.is_set():
         db = session_factory()
         try:
-            job = process_next_job(db)
+            job = process_next_job(db, vault)
         finally:
             db.close()
 

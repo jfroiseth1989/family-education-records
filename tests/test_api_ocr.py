@@ -9,9 +9,12 @@ app/jobs/worker.py::process_next_job for determinism.
 
 from __future__ import annotations
 
+from unittest import mock
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.ocr.engine import OcrResult
 from app.db.models import Document, DocumentCustodyEvent, OcrJob
 from app.jobs.worker import process_next_job
 
@@ -118,9 +121,12 @@ def test_ocr_jobs_page_shows_completed_job_after_processing(client: TestClient, 
     case_id = _create_case(client)
     _upload_image(client, case_id, "scan.jpg")
 
-    with app.state.session_factory() as db:
-        process_next_job(db)
-        db.commit()
+    fake_result = OcrResult(text="mocked", confidence=90.0, word_boxes=[])
+    with mock.patch("app.core.ocr.service.is_tesseract_available", return_value=True), \
+         mock.patch("app.core.ocr.service.engine_label", return_value="tesseract-test"), \
+         mock.patch("app.core.ocr.service.run_ocr_on_image", return_value=fake_result):
+        with app.state.session_factory() as db:
+            process_next_job(db, app.state.vault)
 
     response = client.get(f"/cases/{case_id}/ocr-jobs")
     assert "Completed" in response.text

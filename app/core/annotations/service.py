@@ -6,13 +6,17 @@ event on the document — same discipline as every other document action.
 
 A highlight is the one annotation kind that also creates a `citations`
 row. Its `quoted_text` is always derived server-side by slicing the
-page's own stored `extracted_text` at the given offsets — never trusted
-from client input — so a highlight can never claim to quote something the
-source page doesn't actually contain at that position. This is a
-deliberate integrity choice, not just a convenience: the alternative
-(accepting a client-submitted quoted_text) would let a client-side bug,
-or a tampered request, record a citation whose text doesn't match its
-own document/page/offsets.
+page's *effective* text (`app/core/ocr/text.py::effective_text()` --
+native, or since Phase 3 Step 1, raw OCR) at the given offsets — never
+trusted from client input — so a highlight can never claim to quote
+something the source page doesn't actually contain at that position.
+This is a deliberate integrity choice, not just a convenience: the
+alternative (accepting a client-submitted quoted_text) would let a
+client-side bug, or a tampered request, record a citation whose text
+doesn't match its own document/page/offsets. The citation's
+`text_source`/`source_confidence` (Phase 3 Step 1) are set from that same
+resolution, at this same call site, so content and provenance can never
+disagree — see docs/PHASE_3_DECISIONS.md §9.2.
 
 Note/bookmark creation and removal also keep `annotation_notes_fts` (Step
 5, §13) in sync via explicit reindex calls -- see
@@ -28,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.core.custody import write_custody_event
 from app.core.indexing.notes_search import deindex_annotation_note, index_annotation_note
+from app.core.ocr.text import effective_text
 from app.db.models import Annotation, AnnotationType, Citation, Document, DocumentPage
 
 
@@ -51,13 +56,17 @@ def create_highlight(
     """Create a highlight: a `citations` row (exact span) plus a linked `annotations` row.
 
     Raises :class:`InvalidHighlightRangeError` for an empty or
-    out-of-bounds span rather than silently clamping it.
+    out-of-bounds span rather than silently clamping it. Works against
+    the page's *effective* text — native or raw OCR (docs/PHASE_3_
+    IMPLEMENTATION_PLAN.md §3) — so a page that needed OCR is citable
+    exactly like a natively-extracted one, once Phase 3 has populated it.
     """
-    text = page.extracted_text or ""
+    resolved = effective_text(page)
+    text = resolved.text or ""
     if not (0 <= start_offset < end_offset <= len(text)):
         raise InvalidHighlightRangeError(
             f"Highlight range [{start_offset}, {end_offset}) is invalid for a "
-            f"page with {len(text)} characters of extracted text."
+            f"page with {len(text)} characters of text."
         )
     quoted_text = text[start_offset:end_offset]
 
@@ -67,6 +76,8 @@ def create_highlight(
         start_offset=start_offset,
         end_offset=end_offset,
         quoted_text=quoted_text,
+        text_source=resolved.source,
+        source_confidence=resolved.confidence,
     )
     db.add(citation)
     db.flush()  # assigns citation.citation_id

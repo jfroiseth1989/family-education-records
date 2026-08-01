@@ -17,6 +17,8 @@ EXPECTED_TABLES = {
     "document_pages",
     "citations",
     "document_text_fts",
+    "ocr_jobs",
+    "ocr_text_history",
     "alembic_version",
 }
 
@@ -150,6 +152,57 @@ def test_document_text_fts_backfills_preexisting_pages(tmp_path: Path):
         conn.close()
 
     assert hits == [(1,)]
+
+
+def test_citations_backfill_to_native_preserves_existing_rows(tmp_path: Path):
+    """Regression test for the Phase 3 Step 1 citations migration
+    (docs/PHASE_3_DECISIONS.md §9.1): a citation created before
+    text_source/source_confidence existed must backfill to
+    ('native', NULL) -- the only value that was ever possible for it,
+    since OCR didn't exist yet -- and every other column must be
+    completely untouched.
+    """
+    db_path = tmp_path / "vault" / "db.sqlite"
+    db_path.parent.mkdir(parents=True)
+
+    from app.db.migrate import _make_alembic_config
+    from alembic import command
+
+    config = _make_alembic_config(db_path)
+    command.upgrade(config, "d250deccf783")  # Step 0's head, before the citations ALTER
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO cases (case_id, label, status) VALUES (1, 'Test', 'active')")
+    conn.execute(
+        """
+        INSERT INTO documents
+            (document_id, case_id, original_filename, stored_path, sha256_hash,
+             file_size_bytes, ingested_by, is_current_version, needs_ocr, extraction_status)
+        VALUES (1, 1, 'x.txt', 'cases/1/originals/x/x.txt', 'deadbeef', 10, 'test-user',
+                1, 0, 'completed')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO citations (citation_id, document_id, quoted_text, start_offset, end_offset)
+        VALUES (1, 1, 'a pre-existing native citation', 0, 30)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    command.upgrade(config, "head")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT quoted_text, start_offset, end_offset, document_id, text_source, "
+            "source_confidence FROM citations WHERE citation_id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == ("a pre-existing native citation", 0, 30, 1, "native", None)
 
 
 def test_document_text_fts_triggers_sync_on_insert_and_delete(tmp_path: Path):

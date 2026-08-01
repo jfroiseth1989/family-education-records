@@ -8,11 +8,13 @@ defined in a hand-written migration, not here, see
 app/db/migrations/versions/08c778ee32af_*.py; case-scoped tags — Step 3;
 `annotation_types`/`annotations` — Step 4; `annotation_notes_fts` — Step 5,
 also hand-written, see app/db/migrations/versions/d93ac0658fac_*.py) plus
-Phase 3 Step 0 (`ocr_jobs` — job-queue infrastructure only; no OCR
-execution, no `ocr_text_history`/`ocr_corrections` yet, those are later
-Phase 3 steps). See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full
-Phase 3 schema and step breakdown. Tables for later Phase 3 steps and
-later phases (facts/observations, the relationship graph, etc.) are
+Phase 3 Steps 0-1 (`ocr_jobs` — job-queue infrastructure, Step 0;
+`citations.text_source`/`source_confidence`, `document_pages.
+ocr_word_boxes`, and `ocr_text_history` — OCR execution core, Step 1).
+`ocr_corrections` (the correction layer) is a later Phase 3 step, not
+built yet. See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3
+schema and step breakdown. Tables for later Phase 3 steps and later
+phases (facts/observations, the relationship graph, etc.) are
 intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
@@ -44,6 +46,10 @@ before implementation began:
                                   timeline, relationship graph) cites
                                   through exclusively (§12.4). First
                                   written by highlight creation in Step 4.
+                                  `text_source`/`source_confidence` (Phase
+                                  3 Step 1) snapshot which kind of text a
+                                  citation quoted, permanently — see the
+                                  Citation docstring.
   - `tags` / `document_tags`   — case-scoped labels a user attaches to
                                   documents (Phase 2 Step 3). No rename or
                                   delete UI yet — see the Tag docstring.
@@ -53,9 +59,11 @@ before implementation began:
                                   `citations` row too — see the Annotation
                                   docstring.
   - `ocr_jobs`                  — job-queue infrastructure for OCR
-                                  execution (Phase 3 Step 0). Not yet
-                                  written to by any real OCR code — see
-                                  the OcrJob docstring.
+                                  execution (Phase 3 Step 0), first
+                                  written to by real OCR code in Step 1.
+  - `ocr_text_history`          — append-only archive of superseded raw
+                                  OCR text (Phase 3 Step 1) — see the
+                                  OcrTextHistory docstring.
 """
 
 from __future__ import annotations
@@ -369,13 +377,16 @@ class DocumentCustodyEvent(Base):
 
 
 class DocumentPage(Base):
-    """One page's worth of extracted (or, in Phase 3, OCR'd) text.
+    """One page's worth of extracted and/or OCR'd text.
 
-    See docs/DATA_MODEL.md "document_pages" and docs/PHASE_2_PLAN.md §4/§12.
-    `extracted_text` is populated by native extraction (Phase 2);
-    `ocr_text` and `extraction_confidence` exist now so Phase 3 can
-    populate them via `UPDATE` without a further migration, but Phase 2
-    never writes to either.
+    See docs/DATA_MODEL.md "document_pages", docs/PHASE_2_PLAN.md §4/§12,
+    and docs/PHASE_3_IMPLEMENTATION_PLAN.md §2/§7. `extracted_text` is
+    populated by native extraction (Phase 2) and never touched by OCR.
+    `ocr_text`/`extraction_confidence`/`ocr_word_boxes` are written by
+    Phase 3 Step 1's `run_ocr_job()` -- `ocr_text` holds the *current* raw
+    OCR value only; a value it replaces on a reprocess is archived to
+    `ocr_text_history` first, never simply overwritten in place (see that
+    model's docstring and docs/PHASE_3_DECISIONS.md §9.3/§10.2).
     """
 
     __tablename__ = "document_pages"
@@ -393,6 +404,13 @@ class DocumentPage(Base):
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     extraction_method: Mapped[str] = mapped_column(String(20), nullable=False)  # native/ocr/none
     extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Tesseract's word-level bounding boxes for this page's current
+    # ocr_text, as a JSON list of {text, left, top, width, height,
+    # confidence} objects -- captured for a future spatial-highlighting
+    # phase (Phase 2 approved decision 2 keeps the viewer text-offset-only
+    # for now); unread by any Phase 3 UI. See
+    # docs/PHASE_3_DECISIONS.md §6.
+    ocr_word_boxes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     needs_ocr: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -412,9 +430,16 @@ class Citation(Base):
     See docs/DATA_MODEL.md "citations" and docs/PHASE_2_PLAN.md §12.4:
     every later phase (verified facts, timeline events, the relationship
     graph) cites through this table exclusively — there is no competing
-    reference mechanism. Not yet written by any UI action as of Phase 2
-    Step 1 (highlight creation in Step 4 is the first writer); the table
-    exists now so that design is built, not just planned.
+    reference mechanism. First written by highlight creation in Phase 2
+    Step 4 (`create_highlight()`, native text only at that point).
+
+    `text_source`/`source_confidence` (Phase 3 Step 1) are snapshotted
+    once, at citation-creation time, by that same function, and never
+    updated afterward -- there is no citation-edit code path anywhere in
+    this application, for any column. A citation permanently records what
+    it quoted and from which kind of source *at the time it was made*;
+    a later correction or re-OCR of that page never retroactively changes
+    it. See docs/PHASE_3_DECISIONS.md §9.2/§10.3.
     """
 
     __tablename__ = "citations"
@@ -432,6 +457,20 @@ class Citation(Base):
     paragraph_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bounding_box: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     quoted_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # native / ocr_raw / ocr_corrected -- which of effective_text()'s
+    # branches (app/core/ocr/text.py) supplied quoted_text. NOT NULL with
+    # server_default='native': every citation created before this column
+    # existed was necessarily native (OCR didn't exist yet), so the
+    # backfill is factually correct, not a guess -- see
+    # docs/PHASE_3_DECISIONS.md §9.1.
+    text_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="native", server_default="native"
+    )
+    # The page's extraction_confidence at the moment this citation was
+    # made, if text_source is ocr_raw/ocr_corrected. Always NULL for
+    # native (native extraction has no confidence score).
+    source_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     document: Mapped["Document"] = relationship()
     page: Mapped["DocumentPage | None"] = relationship()
@@ -565,9 +604,10 @@ class OcrJob(Base):
     both added in later steps) -- this table only ever tracks *job*
     status, not text content.
 
-    Step 0 only ever writes/updates this table via a temporary placeholder
-    processor that proves the queue mechanics work (see
-    app/jobs/worker.py) -- no real OCR execution exists yet.
+    Job *lifecycle* mechanics (claim/finish/crash-recovery) were built in
+    Step 0 against a temporary placeholder processor; Step 1 replaces that
+    placeholder with real OCR execution (`app/core/ocr/service.py`)
+    without changing this table's shape at all.
     """
 
     __tablename__ = "ocr_jobs"
@@ -590,6 +630,44 @@ class OcrJob(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     document: Mapped["Document"] = relationship()
+
+
+class OcrTextHistory(Base):
+    """Archive of a page's raw OCR text, superseded by a later reprocess.
+
+    See docs/PHASE_3_IMPLEMENTATION_PLAN.md §2 and
+    docs/PHASE_3_DECISIONS.md §9.3. Append-only -- written exactly once,
+    by `run_ocr_job()` (app/core/ocr/service.py), immediately *before* it
+    overwrites a page's existing (non-null) `ocr_text` on a reprocess run.
+    Never written on a page's first OCR run (nothing to archive yet) and
+    never updated or deleted afterward. Exists specifically so a
+    superseded raw OCR guess is not simply lost the way a superseded
+    `document_pages` row already is on native re-extraction (Phase 2 Step
+    1) -- OCR output is not deterministic run-to-run the way re-running
+    native extraction against an unchanged file is, so this phase gives
+    it a stronger retention guarantee. Read only for audit/history
+    display -- never consulted by `effective_text()`
+    (app/core/ocr/text.py), which only ever reflects current state.
+    """
+
+    __tablename__ = "ocr_text_history"
+
+    history_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    page_id: Mapped[int] = mapped_column(
+        ForeignKey("document_pages.page_id"), nullable=False
+    )
+
+    ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    superseded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    superseded_by_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ocr_jobs.job_id"), nullable=True
+    )
+
+    page: Mapped["DocumentPage"] = relationship()
+    superseded_by_job: Mapped["OcrJob | None"] = relationship()
 
 
 class AuditLog(Base):

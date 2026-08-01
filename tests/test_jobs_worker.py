@@ -1,26 +1,42 @@
 """Tests for app/jobs/worker.py -- claim/process/finish and crash recovery.
 
-See docs/PHASE_3_IMPLEMENTATION_PLAN.md Step 0. `process_next_job` uses a
-temporary placeholder in this step (no real OCR yet, see the module
-docstring) -- these tests confirm the *queue mechanics* work correctly,
-independent of what a job actually does.
+See docs/PHASE_3_IMPLEMENTATION_PLAN.md Steps 0-1. `process_next_job` now
+runs real OCR execution (app/core/ocr/service.py) -- these tests mock at
+the `pytesseract` call boundary (see tests/test_ocr_engine.py for that
+seam) so they don't depend on a real Tesseract binary being installed.
+Content-level OCR correctness is tested in tests/test_ocr_service.py;
+these tests focus on the *queue* mechanics: claim, finish, crash recovery.
 """
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest import mock
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.extraction.service import extract_document
 from app.core.files import compute_sha256
 from app.core.ingestion.service import ingest_document
+from app.core.ocr.engine import OcrResult
 from app.core.ocr.queue import enqueue_ocr_job
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document, OcrJob
+from app.db.models import Case, OcrJob
 from app.jobs.worker import claim_next_job, finish_job, process_next_job, sweep_stuck_jobs
+
+_FAKE_RESULT = OcrResult(text="Mocked OCR output for worker tests.", confidence=88.0, word_boxes=[])
+
+
+def _mock_ocr():
+    """Patches the pytesseract call boundary so process_next_job succeeds
+    deterministically without a real Tesseract binary.
+    """
+    return (
+        mock.patch("app.core.ocr.service.is_tesseract_available", return_value=True),
+        mock.patch("app.core.ocr.service.engine_label", return_value="tesseract-test"),
+        mock.patch("app.core.ocr.service.run_ocr_on_image", return_value=_FAKE_RESULT),
+    )
 
 
 def _queued_job(db, vault, case, tmp_path: Path, filename: str = "scan.jpg") -> OcrJob:
@@ -110,7 +126,7 @@ def test_finish_job_records_error_on_failure(
     assert claimed.document.ocr_status == "failed"
 
 
-# --- process_next_job (Step 0 placeholder) --------------------------------
+# --- process_next_job (real execution, Step 1) --------------------------
 
 
 def test_process_next_job_processes_one_job_end_to_end(
@@ -118,45 +134,64 @@ def test_process_next_job_processes_one_job_end_to_end(
 ):
     job = _queued_job(db_session, vault, sample_case, tmp_path)
 
-    processed = process_next_job(db_session)
+    patches = _mock_ocr()
+    with patches[0], patches[1], patches[2]:
+        processed = process_next_job(db_session, vault)
 
     assert processed.job_id == job.job_id
     assert processed.status == "completed"
-    assert processed.engine == "phase3-step0-placeholder"
+    assert processed.engine == "tesseract-test"
     assert processed.document.ocr_status == "completed"
 
 
-def test_process_next_job_returns_none_when_queue_empty(db_session: Session):
-    assert process_next_job(db_session) is None
+def test_process_next_job_returns_none_when_queue_empty(db_session: Session, vault: VaultLayout):
+    assert process_next_job(db_session, vault) is None
 
 
-def test_process_next_job_does_not_write_a_custody_event(
+def test_process_next_job_writes_ocr_completed_custody_event(
     db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
 ):
-    """The Step 0 placeholder does no real OCR -- writing ocr_completed for
-    a fake run would misrepresent it as a genuine action. Only the
-    ocr_queued event (from enqueue_ocr_job) should exist.
-    """
     job = _queued_job(db_session, vault, sample_case, tmp_path)
     document = job.document
 
-    process_next_job(db_session)
+    patches = _mock_ocr()
+    with patches[0], patches[1], patches[2]:
+        process_next_job(db_session, vault)
 
     event_types = [e.event_type for e in document.custody_events]
-    assert event_types == ["imported", "extracted", "ocr_queued"]
+    assert event_types == ["imported", "extracted", "ocr_queued", "ocr_completed"]
 
 
-def test_process_next_job_never_touches_document_pages(
+def test_process_next_job_writes_ocr_text_to_document_pages(
     db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
 ):
     job = _queued_job(db_session, vault, sample_case, tmp_path)
     document = job.document
-    pages_before = [(p.page_id, p.ocr_text, p.extracted_text) for p in document.pages]
 
-    process_next_job(db_session)
+    patches = _mock_ocr()
+    with patches[0], patches[1], patches[2]:
+        process_next_job(db_session, vault)
 
-    pages_after = [(p.page_id, p.ocr_text, p.extracted_text) for p in document.pages]
-    assert pages_after == pages_before
+    page = document.pages[0]
+    assert page.ocr_text == _FAKE_RESULT.text
+    assert page.extraction_confidence == _FAKE_RESULT.confidence
+    assert page.extraction_method == "ocr"
+
+
+def test_process_next_job_without_tesseract_fails_for_real(
+    db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
+):
+    """No mocking at all -- this test environment genuinely has no
+    Tesseract binary installed, so this exercises the real failure path
+    rather than a simulated one.
+    """
+    job = _queued_job(db_session, vault, sample_case, tmp_path)
+
+    processed = process_next_job(db_session, vault)
+
+    assert processed.status == "failed"
+    assert "Tesseract" in processed.error
+    assert processed.document.ocr_status == "failed"
 
 
 def test_process_next_job_never_modifies_the_stored_original(
@@ -168,7 +203,9 @@ def test_process_next_job_never_modifies_the_stored_original(
     hash_before = compute_sha256(stored_path)
     content_before = stored_path.read_bytes()
 
-    process_next_job(db_session)
+    patches = _mock_ocr()
+    with patches[0], patches[1], patches[2]:
+        process_next_job(db_session, vault)
 
     assert compute_sha256(stored_path) == hash_before
     assert stored_path.read_bytes() == content_before
@@ -207,7 +244,9 @@ def test_sweep_stuck_jobs_ignores_completed_jobs(
     db_session: Session, vault: VaultLayout, sample_case: Case, tmp_path: Path
 ):
     _queued_job(db_session, vault, sample_case, tmp_path)
-    process_next_job(db_session)  # -> completed
+    patches = _mock_ocr()
+    with patches[0], patches[1], patches[2]:
+        process_next_job(db_session, vault)  # -> completed
 
     count = sweep_stuck_jobs(db_session)
 
