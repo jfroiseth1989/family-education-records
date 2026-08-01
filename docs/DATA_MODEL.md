@@ -90,8 +90,12 @@ One row per ingested file (including attachments extracted from emails).
 - `source` — free text, e.g. "emailed by district," "parent's own scan"
 - `document_type_id` (FK → `document_types`) — see Extensibility below;
   replaces a hardcoded enum so new document types don't require a migration
-- `document_date`, `document_date_precision` (exact/approximate/range),
-  `document_date_source` (extracted/manual)
+- `document_date`, `document_date_range_end`, `document_date_precision`
+  (exact/approximate/range), `document_date_source` (manual/extracted/
+  file_metadata) — see "Date representation pattern" below. When
+  `document_date_precision = range`, `document_date` holds the range's
+  start and `document_date_range_end` holds its end; for `exact` or
+  `approximate`, `document_date_range_end` is always null.
 - `has_text_layer` (bool), `needs_ocr` (bool), `ocr_status`
 - `ingested_at`, `ingested_by`
 - `notes`
@@ -116,6 +120,34 @@ None of `original_filename`, `sha256_hash`, `stored_path`, or
 `file_size_bytes` are ever updated in place on an existing row once set —
 see design principle 9. A "corrected IEP" is always a brand-new row with its
 own hash and its own file under `originals/`.
+
+#### Date representation pattern (reused by every future date-bearing table)
+
+Special education records routinely carry dates that are approximate or
+genuinely span a range (a triennial evaluation window, a period of missed
+services, "sometime in March 2024") rather than a single known day. One
+precision value can't represent that, so every entity that stores a
+record-effective date — `documents.document_date` now, and
+`timeline_events.event_date` when Phase 4 builds it — uses the same
+three-column shape rather than each inventing its own:
+
+- `*_date` — always populated when any date is known at all. For
+  `exact`/`approximate` precision, this is the (single) date. For `range`
+  precision, this is the range's **start**.
+- `*_date_range_end` — populated **only** when precision is `range`; null
+  otherwise. Must be on or after `*_date` when present.
+- `*_date_precision` — `exact` / `approximate` / `range`.
+- `*_date_source` — how the date was determined: `manual` (entered by a
+  person), `extracted` (suggested from the document's own text — an
+  `ai_observations` candidate until promoted, never written here directly
+  by an extraction step), or `file_metadata` (e.g. an email's `Date`
+  header). Always required whenever a date is present; never inferred.
+
+Unknown/unavailable is always a fully valid state, represented by leaving
+all four columns null — never a guessed or defaulted date. See
+`app/core/document_dates.py` for the reference implementation of this
+pattern (documents-only for now; the same shape is intended for
+`timeline_events` once Phase 4 builds it, rather than a redesign).
 
 ### `document_version_groups`
 The stable identity for a "logical record" across its versions — e.g. "IEP
@@ -361,7 +393,10 @@ summaries specifically.
 ### `timeline_events`
 - `event_id` (PK)
 - `case_id` (FK)
-- `event_date`, `event_date_precision`
+- `event_date`, `event_date_range_end`, `event_date_precision`,
+  `event_date_source` — the same date representation pattern as
+  `documents` (see "Date representation pattern" above), not a
+  timeline-specific variant
 - `title`, `description`
 - `event_type_id` (FK → `event_types`)
 - `created_by` — system-suggested / manual

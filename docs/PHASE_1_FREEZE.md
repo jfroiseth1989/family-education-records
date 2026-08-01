@@ -148,3 +148,35 @@ None of the above block Phase 2 technically. They're either accepted
 Phase 1 trade-offs worth a final conscious sign-off, or one substantive
 question (#5) worth resolving before Phase 2's date-extraction work makes
 assumptions about the precision model.
+
+## Post-freeze addendum: owner decisions
+
+All seven items above were reviewed and resolved by the owner:
+
+1. **Vault location** — `~/FERPA-Evidence-Vault` confirmed as the
+   permanent default; `FERPA_VAULT_PATH` stays configurable (already true —
+   no change needed).
+2. **Case retirement** — no-delete-only-archive confirmed as the
+   *permanent* model, not a Phase 1 placeholder. Evidence records are never
+   permanently deletable through the application, now or in any later phase.
+3. **Integrity re-verification** — stays manual-only. Automatic/scheduled
+   re-verification is explicitly deferred pending a clear workflow reason
+   and its own design review — not to be added incidentally by a later phase.
+4. **Version linking** — manual-only confirmed as permanent. No automatic
+   superseded-relationship inference, ever, without user confirmation.
+5. **Date precision** — resolved by expanding the design (not by further
+   Phase 1 code changes): `docs/DATA_MODEL.md` now specifies a
+   `range` precision value backed by a `*_date_range_end` column, as a
+   reusable pattern applying to `documents.document_date` today and
+   `timeline_events.event_date` when Phase 4 builds it. Implementation
+   (an additive migration to `documents` plus a small UI/service update)
+   is scoped as the first work item of the Phase 2 plan, not implemented
+   yet — see `docs/PHASE_2_PLAN.md`.
+6. **`current_document_id` FK limitation** — accepted as documented. No
+   change.
+7. **`document_pages`/`citations` design** — confirmed to proceed as
+   already approved, unless Phase 2 planning surfaces a genuine
+   architectural conflict (none identified).
+
+Phase 1 remains frozen as described above; item 5's *design* is now final,
+its *implementation* is queued as Phase 2 work pending plan approval.
