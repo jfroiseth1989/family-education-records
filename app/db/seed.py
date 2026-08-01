@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AnnotationType, DocumentType
+from app.db.models import AnnotationType, DocumentType, FactType
 
 # Matches the default list in docs/DATA_MODEL.md "documents". Users are not
 # limited to this list — DocumentType is a lookup table specifically so
@@ -34,6 +34,18 @@ DEFAULT_ANNOTATION_TYPES: list[tuple[str, str]] = [
     ("bookmark", "A page-level marker with no required text"),
 ]
 
+# Matches the example list in docs/DATA_MODEL.md "fact_types" -- shared
+# by both `verified_facts` and `ai_observations` (Phase 3.5 Step 1).
+# Same extensibility pattern as document/annotation types: more rows can
+# be added later without a migration.
+DEFAULT_FACT_TYPES: list[tuple[str, str]] = [
+    ("date", "A specific date or date range asserted about the case"),
+    ("person", "A person's identity, role, or involvement asserted about the case"),
+    ("decision", "A decision, determination, or action taken by a party"),
+    ("category", "A categorical claim not covered by another fact type"),
+    ("custom", "A claim that doesn't fit another fact type"),
+]
+
 
 def seed_document_types(db: Session) -> None:
     """Insert the default document types if they don't already exist.
@@ -57,4 +69,16 @@ def seed_annotation_types(db: Session) -> None:
     for name, description in DEFAULT_ANNOTATION_TYPES:
         if name not in existing_names:
             db.add(AnnotationType(name=name, description=description))
+    db.commit()
+
+
+def seed_fact_types(db: Session) -> None:
+    """Insert the default fact types if they don't already exist.
+
+    Idempotent, same pattern as seed_document_types().
+    """
+    existing_names = set(db.scalars(select(FactType.name)))
+    for name, description in DEFAULT_FACT_TYPES:
+        if name not in existing_names:
+            db.add(FactType(name=name, description=description))
     db.commit()

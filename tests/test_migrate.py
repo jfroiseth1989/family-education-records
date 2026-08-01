@@ -19,6 +19,13 @@ EXPECTED_TABLES = {
     "document_text_fts",
     "ocr_jobs",
     "ocr_text_history",
+    "fact_types",
+    "ai_observations",
+    "ai_observation_citations",
+    "verified_facts",
+    "verified_fact_citations",
+    "ai_summaries",
+    "summary_source_documents",
     "alembic_version",
 }
 

@@ -8,13 +8,17 @@ defined in a hand-written migration, not here, see
 app/db/migrations/versions/08c778ee32af_*.py; case-scoped tags — Step 3;
 `annotation_types`/`annotations` — Step 4; `annotation_notes_fts` — Step 5,
 also hand-written, see app/db/migrations/versions/d93ac0658fac_*.py) plus
-Phase 3 Steps 0-3 (`ocr_jobs` — job-queue infrastructure, Step 0;
+Phase 3 Steps 0-4 (`ocr_jobs` — job-queue infrastructure, Step 0;
 `citations.text_source`/`source_confidence`, `document_pages.
 ocr_word_boxes`, and `ocr_text_history` — OCR execution core, Step 1;
-`ocr_corrections` — correction layer, Step 3; Step 2 added no schema).
-See docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3 schema and
-step breakdown. Tables for later phases (facts/observations, the
-relationship graph, etc.) are intentionally not created yet.
+`ocr_corrections` — correction layer, Step 3; Steps 2 and 4 added no
+schema) plus Phase 3.5 Step 1 (`fact_types`, `ai_observations`,
+`ai_observation_citations`, `verified_facts`, `verified_fact_citations`,
+`ai_summaries`, `summary_source_documents` — the Fact, Observation &
+Summary Layer, see docs/ARCHITECTURE.md §3.7). See
+docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3 schema and step
+breakdown. Tables for later phases (the timeline, relationship graph,
+etc.) are intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
 the lookup-table / EAV-metadata extensibility design in that document is
@@ -67,6 +71,24 @@ before implementation began:
                                   text (Phase 3 Step 3). Never overwrites
                                   `document_pages.ocr_text` — see the
                                   OcrCorrection docstring.
+  - `fact_types`                — lookup table for the Fact, Observation &
+                                  Summary Layer (Phase 3.5 Step 1).
+  - `ai_observations` /
+    `ai_observation_citations`  — machine-suggested candidate facts,
+                                  pending human review. Never read by the
+                                  timeline/conflict tracker/binder — see
+                                  the AiObservation docstring.
+  - `verified_facts` /
+    `verified_fact_citations`   — human-confirmed facts. The only table
+                                  later phases (timeline, conflicts,
+                                  binder) may read from this layer — see
+                                  the VerifiedFact docstring.
+  - `ai_summaries` /
+    `summary_source_documents`  — schema for narrative AI summaries.
+                                  Created now for schema completeness;
+                                  no generator or review UI exists yet
+                                  (Phase 3.5 Step 1) — see the AiSummary
+                                  docstring.
 """
 
 from __future__ import annotations
@@ -733,3 +755,210 @@ class AuditLog(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class FactType(Base):
+    """Lookup table for the kind of claim a fact/observation represents.
+
+    Same extensibility pattern as `document_types`/`annotation_types` — a
+    new kind is a row insert, not a migration. Seeded with defaults by
+    app/db/seed.py. Shared by both `verified_facts` and `ai_observations`
+    (see docs/DATA_MODEL.md "fact_types") since the same taxonomy applies
+    to a confirmed fact and to the machine-suggested candidate it may have
+    been promoted from.
+    """
+
+    __tablename__ = "fact_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class AiObservation(Base):
+    """A machine-suggested candidate fact, pending human review (Phase 3.5).
+
+    See docs/ARCHITECTURE.md §3.7 and docs/DATA_MODEL.md "ai_observations".
+    **Never read by the timeline, conflict tracker, or binder narrative**
+    -- those only ever read `verified_facts`; a row here is a suggestion,
+    not a usable fact, until a human promotes it. `statement`/
+    `confidence_score`/`method` are written once at creation and never
+    changed afterward -- only `status`/`reviewed_by`/`reviewed_at`
+    transition, by app/core/facts/service.py's `promote_observation()` or
+    `reject_observation()`; the row itself is never deleted, so the
+    suggestion-to-decision history is always auditable. v1's only
+    observation source (Phase 3.5 Step 3) is a deterministic regex/
+    heuristic date-parser run over `effective_text()` -- not an LLM or
+    cloud service; see docs/PROJECT_PLAN.md decision #11.
+    """
+
+    __tablename__ = "ai_observations"
+
+    observation_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    fact_type_id: Mapped[int] = mapped_column(ForeignKey("fact_types.type_id"), nullable=False)
+
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    method: Mapped[str] = mapped_column(String(100), nullable=False)
+    # pending_review / accepted / rejected
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending_review", server_default="pending_review"
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    case: Mapped["Case"] = relationship()
+    fact_type: Mapped["FactType"] = relationship()
+
+
+class AiObservationCitation(Base):
+    """Many-to-many: which citation(s) support one AI observation.
+
+    See docs/DATA_MODEL.md "ai_observation_citations". Attached atomically
+    when the observation is created -- no code path adds a citation to an
+    existing observation afterward.
+    """
+
+    __tablename__ = "ai_observation_citations"
+
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_observations.observation_id"), primary_key=True
+    )
+    citation_id: Mapped[int] = mapped_column(
+        ForeignKey("citations.citation_id"), primary_key=True
+    )
+
+
+class VerifiedFact(Base):
+    """A discrete, human-confirmed factual claim (Phase 3.5).
+
+    See docs/ARCHITECTURE.md §3.7 and docs/DATA_MODEL.md "verified_facts".
+    **Only rows in this table are usable by the timeline (Phase 4),
+    conflict tracker (Phase 5), and binder narrative (Phase 6)** --
+    `ai_observations` is never read directly by any of those. Created
+    either directly by a human citing a document
+    (app/core/facts/service.py::create_verified_fact()) or by promoting a
+    reviewed `ai_observations` row (`promote_observation()`, which sets
+    `source_observation_id` for lineage and leaves the originating
+    observation row untouched -- it is never edited or deleted). Soft-
+    delete only (`deleted_at`), same convention as `Document`/
+    `Annotation` -- a fact is never hard-deleted once other rows may cite it.
+    """
+
+    __tablename__ = "verified_facts"
+
+    fact_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    fact_type_id: Mapped[int] = mapped_column(ForeignKey("fact_types.type_id"), nullable=False)
+
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    # certain / probable / uncertain -- the human's own certainty about the
+    # fact, always required regardless of where the fact came from.
+    confidence_label: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Only populated when this fact was promoted from (or otherwise
+    # informed by) a scored ai_observations row -- null for a fact a human
+    # asserted directly with no machine suggestion behind it.
+    confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_observation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_observations.observation_id"), nullable=True
+    )
+
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    case: Mapped["Case"] = relationship()
+    fact_type: Mapped["FactType"] = relationship()
+    source_observation: Mapped["AiObservation | None"] = relationship()
+
+
+class VerifiedFactCitation(Base):
+    """Many-to-many: which citation(s) support one verified fact.
+
+    See docs/DATA_MODEL.md "verified_fact_citations". Attached atomically
+    when the fact is created -- no code path adds a citation to an
+    existing fact afterward.
+    """
+
+    __tablename__ = "verified_fact_citations"
+
+    fact_id: Mapped[int] = mapped_column(ForeignKey("verified_facts.fact_id"), primary_key=True)
+    citation_id: Mapped[int] = mapped_column(
+        ForeignKey("citations.citation_id"), primary_key=True
+    )
+
+
+class AiSummary(Base):
+    """Narrative AI-generated text about a document, case, or date range.
+
+    See docs/ARCHITECTURE.md §3.7 and docs/DATA_MODEL.md "ai_summaries".
+    **Schema-only in Phase 3.5** -- no code path in this application
+    generates a row here yet, since doing so would require either a cloud
+    AI service (categorically excluded, see docs/PRIVACY_SECURITY.md) or a
+    local summarization method not yet approved (reserved for Phase 8,
+    docs/PROJECT_PLAN.md). Structurally and permanently separate from
+    `verified_facts` -- there is no code path that turns a row in this
+    table into a verified fact, reviewed or not; a summary is interpretive
+    synthesis, not a discrete citable claim. `label_text` is not free text
+    -- a fixed, app-enforced constant a future generator writes verbatim,
+    to be rendered wherever the summary appears, on screen or in an
+    exported binder, regardless of `review_status`.
+    """
+
+    __tablename__ = "ai_summaries"
+
+    summary_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+
+    # document / case / timeline_range
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=True
+    )
+    scope_range_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scope_range_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # pending_review / reviewed_accurate / reviewed_needs_correction
+    review_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending_review", server_default="pending_review"
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    label_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    case: Mapped["Case"] = relationship()
+    scope_document: Mapped["Document | None"] = relationship()
+
+
+class SummarySourceDocument(Base):
+    """Which documents fed into a given AI summary -- provenance for summaries.
+
+    See docs/DATA_MODEL.md "summary_source_documents". Schema-only in
+    Phase 3.5, same as `AiSummary` -- no writer exists yet.
+    """
+
+    __tablename__ = "summary_source_documents"
+
+    summary_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_summaries.summary_id"), primary_key=True
+    )
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), primary_key=True
+    )
