@@ -1,6 +1,10 @@
 """Tests for app/core/auth/session.py -- server-side session
-issuance/lookup (Security Phase Step 2). Purely informational in this
-step: nothing here enforces access; see the module docstring.
+issuance/lookup (Security Phase Steps 2 and 4).
+
+`get_current_session()` stays purely informational (see its docstring).
+`resolve_and_maintain_session()` (Step 4) is the request-mutating
+counterpart used by the enforcement middleware -- covered in its own
+section below.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from app.core.auth.session import (
     delete_session,
     get_current_session,
     is_session_valid,
+    resolve_and_maintain_session,
     touch_session,
 )
 from app.db.models import AppAuth, AppSession
@@ -161,3 +166,91 @@ def test_delete_session_is_a_no_op_for_an_unknown_id(db_session: Session):
     # Must not raise.
     delete_session(db_session, "does-not-exist")
     db_session.commit()
+
+
+# --- resolve_and_maintain_session (Security Phase Step 4) ---
+
+
+def test_resolve_and_maintain_session_returns_none_without_a_cookie(db_session: Session):
+    _make_auth(db_session)
+    assert resolve_and_maintain_session(_FakeRequest(), db_session) is None
+
+
+def test_resolve_and_maintain_session_returns_none_for_unknown_session_id(db_session: Session):
+    _make_auth(db_session)
+    request = _FakeRequest({SESSION_COOKIE_NAME: "does-not-exist"})
+    assert resolve_and_maintain_session(request, db_session) is None
+
+
+def test_resolve_and_maintain_session_slides_activity_forward_for_a_valid_session(db_session: Session):
+    auth = _make_auth(db_session, inactivity_lock_minutes=15)
+    old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    session = AppSession(
+        session_id="f" * 43,
+        last_activity_at=old_time,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    db_session.add(session)
+    db_session.commit()
+
+    request = _FakeRequest({SESSION_COOKIE_NAME: session.session_id})
+    found = resolve_and_maintain_session(request, db_session)
+
+    assert found is not None
+    assert found.session_id == session.session_id
+    # SQLite doesn't reliably round-trip tzinfo -- see is_session_valid's
+    # docstring for the same normalization elsewhere in this module.
+    assert found.last_activity_at.replace(tzinfo=None) > old_time.replace(tzinfo=None)
+
+    # The slide was actually committed, not just held in memory.
+    reloaded = db_session.get(AppSession, session.session_id)
+    assert reloaded.last_activity_at.replace(tzinfo=None) > old_time.replace(tzinfo=None)
+
+
+def test_resolve_and_maintain_session_deletes_a_session_past_the_inactivity_cutoff(db_session: Session):
+    auth = _make_auth(db_session, inactivity_lock_minutes=15)
+    session = AppSession(
+        session_id="g" * 43,
+        last_activity_at=datetime.now(timezone.utc) - timedelta(minutes=16),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    db_session.add(session)
+    db_session.commit()
+    session_id = session.session_id
+
+    request = _FakeRequest({SESSION_COOKIE_NAME: session_id})
+    assert resolve_and_maintain_session(request, db_session) is None
+
+    # "Expired or inactive sessions must be deleted" -- not merely rejected.
+    assert db_session.get(AppSession, session_id) is None
+
+
+def test_resolve_and_maintain_session_deletes_a_session_past_absolute_expiry(db_session: Session):
+    auth = _make_auth(db_session, inactivity_lock_minutes=15)
+    session = AppSession(
+        session_id="h" * 43,
+        last_activity_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    db_session.add(session)
+    db_session.commit()
+    session_id = session.session_id
+
+    request = _FakeRequest({SESSION_COOKIE_NAME: session_id})
+    assert resolve_and_maintain_session(request, db_session) is None
+    assert db_session.get(AppSession, session_id) is None
+
+
+def test_resolve_and_maintain_session_deletes_the_row_when_no_account_exists(db_session: Session):
+    session = AppSession(
+        session_id="i" * 43,
+        last_activity_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    db_session.add(session)
+    db_session.commit()
+    session_id = session.session_id
+
+    request = _FakeRequest({SESSION_COOKIE_NAME: session_id})
+    assert resolve_and_maintain_session(request, db_session) is None
+    assert db_session.get(AppSession, session_id) is None

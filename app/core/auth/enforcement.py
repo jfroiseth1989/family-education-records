@@ -1,5 +1,5 @@
 """Deny-by-default authentication + CSRF enforcement (Security Phase
-Steps 3 and 3.5).
+Steps 3, 3.5, and 4).
 
 Every route is protected by default; only the explicit auth pages
 (`/auth/*`) and static assets (`/static/*`) are public. There is no
@@ -7,10 +7,15 @@ route-by-route opt-in list to keep in sync as new routes are added --
 a new route is protected automatically simply by existing outside those
 two prefixes.
 
-Inactivity-timeout enforcement is deliberately deferred to Step 4 (see
-`app.core.auth.session.is_session_valid`'s docstring) -- this middleware
-only enforces absolute session expiry for now, via
-`check_inactivity=False`.
+Step 4 enforces the inactivity timeout (in addition to the absolute
+expiry Step 3 already enforced) via
+`app.core.auth.session.resolve_and_maintain_session()`: every request
+that reaches this middleware and carries a still-valid session has that
+session's inactivity window slid forward as a side effect of the same
+lookup, and any request whose session has expired (either way) gets that
+session's row deleted outright, not merely rejected -- see that
+function's docstring for why a lazy delete-on-next-access is correct
+here rather than needing a separate periodic sweep.
 
 Every response this middleware handles -- protected or public, success or
 redirect -- gets `Cache-Control: no-store, private` + `Pragma: no-cache`
@@ -43,7 +48,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 from app.core.auth.csrf import csrf_token_matches, extract_submitted_csrf_token
-from app.core.auth.session import get_current_session
+from app.core.auth.session import SESSION_COOKIE_NAME, resolve_and_maintain_session
 
 _PUBLIC_PATH_PREFIXES = ("/auth/",)
 _STATIC_PATH_PREFIX = "/static/"
@@ -78,10 +83,16 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
 
         session_factory = request.app.state.session_factory
         with session_factory() as db:
-            session = get_current_session(request, db, check_inactivity=False)
+            session = resolve_and_maintain_session(request, db)
 
         if session is None:
             response = RedirectResponse(url="/auth/login", status_code=303)
+            # A session that just expired (rather than one that was never
+            # there) still has its now-stale cookie on the request --
+            # resolve_and_maintain_session() already deleted the row, but
+            # the browser needs telling too, or it would keep presenting
+            # a session_id that no longer names anything.
+            response.delete_cookie(SESSION_COOKIE_NAME)
             _apply_no_store_headers(response)
             return response
 

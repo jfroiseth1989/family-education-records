@@ -1,13 +1,17 @@
-"""Server-side session issuance/lookup (Security Phase Steps 2-3).
+"""Server-side session issuance/lookup (Security Phase Steps 2-4).
 
 Sessions are opaque tokens stored in `app_sessions` (see the AppSession
 model docstring) -- the cookie only ever carries the token, never any
-session data itself. This module enforces nothing on its own: reading an
-invalid/missing/expired session here just returns None. Actually blocking
-access is `app.core.auth.enforcement.AuthEnforcementMiddleware`'s job (see
-that module); `get_current_session()` here is also used by base.html to
-decide what the header shows (Log in vs. Lock/Log out) and by the
-login/setup routes to issue a session on success.
+session data itself. `get_current_session()` is a pure read: an
+invalid/missing/expired session just returns None, no side effects. It's
+used by base.html's header display and by the login/setup routes to
+issue a session on success.
+
+`resolve_and_maintain_session()` is the other, request-mutating kind of
+lookup, reserved for `app.core.auth.enforcement.AuthEnforcementMiddleware`
+(Security Phase Step 4): a valid session's inactivity window is slid
+forward, and an invalid one's row is hard-deleted outright rather than
+merely rejected in place -- see that function's docstring.
 """
 
 from __future__ import annotations
@@ -51,10 +55,13 @@ def create_session(db: Session, auth: AppAuth) -> AppSession:
 
 
 def touch_session(session: AppSession) -> None:
-    """Slide the inactivity window forward. Not called by any route yet
-    in this step (there is no enforcement middleware to call it from);
-    provided now, with its own test, so the later enforcement step
-    reuses this exact function rather than re-deriving the logic.
+    """Slide the inactivity window forward by setting `last_activity_at`
+    to now. Called by `resolve_and_maintain_session()` -- and only there
+    -- exactly once per request that turns out to carry a valid session,
+    which is what "update session activity only after a valid
+    authenticated request" (Security Phase Step 4) means in practice:
+    a request that never had a session, or whose session already failed
+    validation, never reaches this call.
     """
     session.last_activity_at = _now()
 
@@ -64,12 +71,16 @@ def is_session_valid(session: AppSession, auth: AppAuth, *, check_inactivity: bo
     `check_inactivity` is True) hasn't hit its inactivity timeout either,
     given `auth`'s currently configured limits.
 
-    `check_inactivity=False` is used by the Step 3 enforcement middleware:
-    absolute expiry is enforced starting in Step 3, but inactivity-timeout
-    enforcement is deliberately deferred to Step 4 (which will pair it with
-    wiring `touch_session()` into the request path for the sliding window --
-    calling it here without that wiring would let a session go stale far
-    past the intended 15-minute window without ever sliding forward).
+    `check_inactivity=False` was how the Step 3 enforcement middleware
+    called this: absolute expiry was enforced starting in Step 3, but
+    inactivity-timeout enforcement was deliberately deferred to Step 4,
+    since enforcing it without also wiring `touch_session()` into the
+    request path would let a session go stale far past the intended
+    15-minute window without ever sliding forward. Step 4 now does both
+    together -- see `resolve_and_maintain_session()`, which calls this
+    with the default `check_inactivity=True`. The parameter still
+    defaults to `True` and stays available for any caller (present or
+    future) that only cares about absolute expiry.
 
     SQLite doesn't reliably round-trip tzinfo on `DateTime(timezone=True)`
     columns -- `session.expires_at`/`last_activity_at` come back naive
@@ -117,6 +128,45 @@ def get_current_session(
     if auth is None or not is_session_valid(session, auth, check_inactivity=check_inactivity):
         return None
 
+    return session
+
+
+def resolve_and_maintain_session(request: Request, db: Session) -> AppSession | None:
+    """The authoritative, request-mutating session check for
+    `AuthEnforcementMiddleware` (Security Phase Step 4) -- and only for
+    it; every other caller wants the side-effect-free
+    `get_current_session()` instead.
+
+    A valid session has its inactivity window slid forward
+    (`touch_session()`) and the update committed, so "session activity"
+    reflects real authenticated traffic, not merely a still-open cookie.
+    An invalid session (hit either its absolute expiry or its inactivity
+    cutoff) has its row hard-deleted and committed before returning None
+    -- "expired or inactive sessions must be deleted and require a full
+    password login" is a hard requirement, not just "stop honoring the
+    cookie": leaving the row in place would mean a session that merely
+    looks expired today could, if the clock were ever wrong or the row
+    otherwise reused, still exist to be resurrected, and it would also
+    leave stale rows accumulating forever with nothing to prune them.
+    A missing cookie or a cookie naming a row that's already gone is not
+    an error -- both simply return None with nothing to delete.
+    """
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_id:
+        return None
+
+    session = db.get(AppSession, session_id)
+    if session is None:
+        return None
+
+    auth = db.scalars(select(AppAuth)).first()
+    if auth is None or not is_session_valid(session, auth, check_inactivity=True):
+        delete_session(db, session_id)
+        db.commit()
+        return None
+
+    touch_session(session)
+    db.commit()
     return session
 
 

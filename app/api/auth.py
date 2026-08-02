@@ -1,10 +1,11 @@
-"""First-run setup, login, lock, and logout routes (Security Phase Step 2).
+"""First-run setup, login, lock, and logout routes (Security Phase Steps
+2 and 4).
 
-Deliberately **not enforced** yet -- no other route in this application
-checks for a session; that is a separate, later step (a deny-by-default
-middleware). These routes exist and are fully tested in isolation first,
-so that later step builds on a working foundation instead of landing
-everything at once. See app/core/auth/session.py and
+Now enforced application-wide by
+`app.core.auth.enforcement.AuthEnforcementMiddleware` -- every route
+outside this router's `/auth/*` prefix requires a valid session. These
+routes stay the one deliberately public path a locked-out or logged-out
+owner can always reach. See app/core/auth/session.py and
 app/core/auth/csrf.py, and docs/PRIVACY_SECURITY.md §6.
 
 Every state-changing route here validates a CSRF token before doing
@@ -15,9 +16,19 @@ app.core.auth.passwords.verify_password_constant_time() -- see that
 function's docstring for why: neither the wording nor the timing of a
 failed login should ever reveal information about this application's
 account state.
+
+Step 4 adds local failed-login throttling, backed by
+`AppAuth.failed_login_attempts`/`locked_until` (present in the schema
+since Step 1, unused until now -- see that model's docstring). The
+5th consecutive failure locks login out for 60 seconds; each further
+failure while still counting doubles that, capped at 15 minutes
+(`_lockout_seconds_for()`). A successful login resets the counter and
+clears the lock -- see `post_login()`.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -34,9 +45,35 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _MIN_PASSWORD_LENGTH = 8
 
+_LOCKOUT_THRESHOLD = 5
+_LOCKOUT_INITIAL_SECONDS = 60
+_LOCKOUT_MAX_SECONDS = 15 * 60
+_LOCKOUT_MESSAGE = "Too many failed attempts. Please wait a few minutes and try again."
+
 
 def _get_auth(db: Session) -> AppAuth | None:
     return db.scalars(select(AppAuth)).first()
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _lockout_seconds_for(failed_attempts: int) -> int:
+    """Escalating lockout duration for the `failed_attempts`-th
+    consecutive failure: 60s at the 5th, doubling each failure after
+    that, capped at 900s (15 minutes) -- the approved defaults.
+    """
+    doublings = failed_attempts - _LOCKOUT_THRESHOLD
+    return min(_LOCKOUT_INITIAL_SECONDS * (2**doublings), _LOCKOUT_MAX_SECONDS)
+
+
+def _is_locked_out(auth: AppAuth) -> bool:
+    if auth.locked_until is None:
+        return False
+    # SQLite doesn't reliably round-trip tzinfo -- see the identical,
+    # earlier-discovered case in app/core/auth/session.py::is_session_valid.
+    return auth.locked_until.replace(tzinfo=None) > _now().replace(tzinfo=None)
 
 
 def _set_session_cookie(response: RedirectResponse, session_id: str) -> None:
@@ -138,6 +175,19 @@ def get_login(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     return response
 
 
+def _login_error_response(request: Request, message: str, status_code: int) -> Response:
+    new_csrf_token = get_or_create_csrf_token(request)
+    templates = request.app.state.templates
+    response = templates.TemplateResponse(
+        request,
+        "auth_login.html",
+        {"error": message, "csrf_token": new_csrf_token},
+        status_code=status_code,
+    )
+    set_csrf_cookie(response, new_csrf_token)
+    return response
+
+
 @router.post("/login")
 def post_login(
     request: Request,
@@ -148,22 +198,37 @@ def post_login(
     verify_csrf(request, csrf_token)
 
     auth = _get_auth(db)
+
+    # A currently-locked account is rejected before spending an Argon2
+    # verify on it, deliberately: extending the lock on every hammered
+    # request during an active lockout would let a sustained attacker
+    # keep the owner locked out indefinitely, which the escalating-but-
+    # capped design is meant to prevent. This doesn't reopen the timing
+    # side-channel verify_password_constant_time() closes -- that
+    # channel is "does this account exist at all", which is already
+    # settled by the time login is reachable (see get_login: no account
+    # redirects to /auth/setup instead of ever rendering this form).
+    if auth is not None and _is_locked_out(auth):
+        return _login_error_response(request, _LOCKOUT_MESSAGE, 429)
+
     # verify_password_constant_time() takes the same code path (a real
     # Argon2 verify, against a dummy hash if auth is None) either way --
-    # see that function's docstring. The error message below is
-    # identical regardless of which branch produced the failure.
+    # see that function's docstring.
     password_hash = auth.password_hash if auth is not None else None
     if not verify_password_constant_time(password, password_hash):
-        new_csrf_token = get_or_create_csrf_token(request)
-        templates = request.app.state.templates
-        response = templates.TemplateResponse(
-            request,
-            "auth_login.html",
-            {"error": "Incorrect password.", "csrf_token": new_csrf_token},
-            status_code=401,
-        )
-        set_csrf_cookie(response, new_csrf_token)
-        return response
+        if auth is not None:
+            auth.failed_login_attempts += 1
+            if auth.failed_login_attempts >= _LOCKOUT_THRESHOLD:
+                auth.locked_until = _now() + timedelta(
+                    seconds=_lockout_seconds_for(auth.failed_login_attempts)
+                )
+            db.commit()
+            if _is_locked_out(auth):
+                return _login_error_response(request, _LOCKOUT_MESSAGE, 429)
+        return _login_error_response(request, "Incorrect password.", 401)
+
+    auth.failed_login_attempts = 0
+    auth.locked_until = None
 
     session = create_session(db, auth)
     db.commit()
