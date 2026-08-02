@@ -1,0 +1,38 @@
+{% extends "auth_base.html" %}
+{% block title %}Save your recovery key — FERChronos{% endblock %}
+{% block content %}
+  <section class="panel auth-panel">
+    <h1>Save your recovery key</h1>
+    {% if recovery_key %}
+      <p class="hint">
+        This is the <strong>only</strong> way to reset your password if
+        you forget it. There is no username, no security question, no
+        password hint, and no cloud or support-desk recovery — FERChronos
+        never leaves this device. Write this key down or store it in a
+        password manager now; it will never be shown again.
+      </p>
+      <p class="recovery-key-value"><code>{{ recovery_key }}</code></p>
+      <p class="hint auth-error">
+        Warning: if you lose both your password and this recovery key,
+        you will permanently lose access to this application. Once
+        whole-vault encryption is added in a future update, that will
+        mean the vault's contents themselves become permanently
+        unreadable, not just this web interface locked — there is no
+        backdoor, master key, or way for anyone (including the people who
+        built FERChronos) to recover it for you.
+      </p>
+    {% endif %}
+    {% if error %}
+      <p class="hint auth-error">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/auth/recovery-key/acknowledge">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="recovery_key" value="{{ recovery_key or '' }}">
+      <label class="checkbox-label">
+        <input type="checkbox" name="confirmed" value="yes" required>
+        I have saved this recovery key in a safe place
+      </label>
+      <button type="submit">Continue</button>
+    </form>
+  </section>
+{% endblock %}

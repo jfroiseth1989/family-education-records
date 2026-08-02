@@ -181,3 +181,16 @@ def delete_session(db: Session, session_id: str) -> None:
     session = db.get(AppSession, session_id)
     if session is not None:
         db.delete(session)
+
+
+def delete_all_sessions(db: Session) -> None:
+    """Hard-delete every session row -- called after a password reset via
+    recovery key (Security Phase Step 5): "invalidate existing sessions
+    after a password reset" means every session anywhere this app might
+    be open, not just the one (if any) the reset request happened to
+    carry, since a recovery reset is precisely the scenario where the
+    owner may not have had a valid session to begin with. Does not
+    commit; the caller controls the transaction boundary.
+    """
+    for session in db.scalars(select(AppSession)).all():
+        db.delete(session)

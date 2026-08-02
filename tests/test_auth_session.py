@@ -18,6 +18,7 @@ from app.core.auth.passwords import hash_password
 from app.core.auth.session import (
     SESSION_COOKIE_NAME,
     create_session,
+    delete_all_sessions,
     delete_session,
     get_current_session,
     is_session_valid,
@@ -254,3 +255,27 @@ def test_resolve_and_maintain_session_deletes_the_row_when_no_account_exists(db_
     request = _FakeRequest({SESSION_COOKIE_NAME: session_id})
     assert resolve_and_maintain_session(request, db_session) is None
     assert db_session.get(AppSession, session_id) is None
+
+
+# --- delete_all_sessions (Security Phase Step 5) ---
+
+
+def test_delete_all_sessions_removes_every_row(db_session: Session):
+    auth = _make_auth(db_session)
+    first = create_session(db_session, auth)
+    db_session.commit()
+    second = create_session(db_session, auth)
+    db_session.commit()
+
+    delete_all_sessions(db_session)
+    db_session.commit()
+
+    assert db_session.get(AppSession, first.session_id) is None
+    assert db_session.get(AppSession, second.session_id) is None
+    assert db_session.scalars(select(AppSession)).all() == []
+
+
+def test_delete_all_sessions_is_a_no_op_with_no_sessions(db_session: Session):
+    # Must not raise.
+    delete_all_sessions(db_session)
+    db_session.commit()

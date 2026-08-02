@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
-from app.api import annotations, auth, cases, documents, facts, ocr, search, tags, timeline
+from app.api import account, annotations, auth, cases, documents, facts, ocr, search, tags, timeline
 from app.config import Settings, get_settings
 from app.core.auth.enforcement import AuthEnforcementMiddleware
 from app.core.auth.session import get_current_session
@@ -129,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.templates.env.globals["all_students"] = _list_students_for_selector
     app.state.templates.env.globals["header_session"] = _header_session
 
+    app.include_router(account.router)
     app.include_router(annotations.router)
     app.include_router(auth.router)
     app.include_router(cases.router)

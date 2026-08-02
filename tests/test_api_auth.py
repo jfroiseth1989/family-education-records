@@ -11,6 +11,8 @@ tests/conftest.py).
 
 from __future__ import annotations
 
+import re
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -29,13 +31,31 @@ def _csrf_token(client: TestClient) -> str:
 
 
 def _complete_setup(client: TestClient, password: str = "owner-password-123") -> None:
+    """Complete first-run setup *and* the one-time recovery-key
+    acknowledgement it now shows (Security Phase Step 5) -- see
+    app/api/auth.py::post_setup. Leaves `client` in exactly the state a
+    real owner reaches right after finishing setup: logged in, and past
+    the recovery-key screen.
+    """
     csrf_token = _csrf_token(client)
     response = client.post(
         "/auth/setup",
         data={"password": password, "confirm_password": password, "csrf_token": csrf_token},
+    )
+    assert response.status_code == 200, response.text
+    recovery_key_match = re.search(r"<code>([^<]+)</code>", response.text)
+    assert recovery_key_match is not None, response.text
+
+    ack_response = client.post(
+        "/auth/recovery-key/acknowledge",
+        data={
+            "csrf_token": csrf_token,
+            "recovery_key": recovery_key_match.group(1),
+            "confirmed": "yes",
+        },
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert ack_response.status_code == 303
 
 
 # --- First-run setup ---
@@ -55,6 +75,11 @@ def test_get_setup_redirects_to_login_once_account_exists(anonymous_client: Test
 
 
 def test_post_setup_creates_account_and_session_cookie(anonymous_client: TestClient, app: FastAPI):
+    """Security Phase Step 5: the response is the one-time recovery-key
+    display, not a redirect to /cases -- but the account and session are
+    already fully created by this point (see app/api/auth.py::post_setup),
+    since the owner is meant to be logged in while they save the key.
+    """
     csrf_token = _csrf_token(anonymous_client)
     response = anonymous_client.post(
         "/auth/setup",
@@ -65,8 +90,8 @@ def test_post_setup_creates_account_and_session_cookie(anonymous_client: TestCli
         },
         follow_redirects=False,
     )
-    assert response.status_code == 303
-    assert response.headers["location"] == "/cases"
+    assert response.status_code == 200
+    assert "Save your recovery key" in response.text
     assert SESSION_COOKIE_NAME in response.cookies
 
     with app.state.session_factory() as db:

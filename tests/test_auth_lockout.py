@@ -25,13 +25,18 @@ def _csrf_token(client: TestClient) -> str:
 
 
 def _complete_setup(client: TestClient) -> None:
+    """Create the account (Security Phase Step 5's response is the
+    one-time recovery-key display, not a redirect -- see
+    app/api/auth.py::post_setup), then immediately log the resulting
+    session back out, since every test here only cares about the account
+    existing, not staying signed in.
+    """
     csrf_token = _csrf_token(client)
     response = client.post(
         "/auth/setup",
         data={"password": _PASSWORD, "confirm_password": _PASSWORD, "csrf_token": csrf_token},
-        follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 200
     client.cookies.clear()  # log the setup-created session back out, as a fresh visitor
 
 

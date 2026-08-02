@@ -1178,20 +1178,25 @@ class AppAuth(Base):
     multi-user login system (see docs/PRIVACY_SECURITY.md §6), so this
     table has zero rows before first-run setup and exactly one row
     afterward. "Has any row?" is how the app detects first launch (Step
-    2, not built yet) -- there is deliberately no separate "is_configured"
-    flag to keep out of sync with reality.
+    2) -- there is deliberately no separate "is_configured" flag to keep
+    out of sync with reality.
 
     `password_hash`/`recovery_key_hash` are Argon2id-encoded hash strings
     from app/core/auth/passwords.py -- never the plaintext password or
     recovery key, which this application never stores or logs anywhere.
-    `recovery_key_hash` is nullable at the schema level even though the
-    setup flow (Step 5, not built yet) is expected to always set it in
-    the same transaction as `password_hash` -- see that step's plan.
+    `recovery_key_hash` is nullable at the schema level for one real
+    reason even though setup (Step 5, app/api/auth.py::post_setup) always
+    sets it in the same transaction as `password_hash` going forward: an
+    account created before Step 5 shipped has no recovery key until the
+    owner logs in with their existing password and generates one via
+    app/api/account.py.
 
     `failed_login_attempts`/`locked_until` back the local login rate
-    limiter (Step 4, not built yet): incremented on each failed attempt,
-    reset to 0 on success, `locked_until` set to an escalating future
-    timestamp after repeated failures.
+    limiter (Step 4, app/api/auth.py): incremented on each failed
+    attempt, reset to 0 on success, `locked_until` set to an escalating
+    future timestamp after repeated failures. Step 5's recovery-key
+    verification shares this exact same counter/lock -- see
+    app/api/auth.py's module docstring.
 
     `inactivity_lock_minutes`/`session_absolute_expiry_hours` are the
     owner-configurable session-lifetime defaults (approved: 15 minutes /
@@ -1232,7 +1237,8 @@ class AppSession(Base):
     fixation by construction). A request is authenticated iff its cookie
     names a row here with `last_activity_at` within
     `AppAuth.inactivity_lock_minutes` and `expires_at` still in the
-    future (enforcement middleware, Step 3, not built yet).
+    future (see app.core.auth.enforcement.AuthEnforcementMiddleware and
+    app.core.auth.session.resolve_and_maintain_session()).
 
     Deliberately **not** append-only, unlike every evidence-bearing table
     in this application: a session row is ephemeral security state, not

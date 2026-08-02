@@ -7,6 +7,7 @@ and never depend on any pre-existing machine state.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -103,10 +104,14 @@ TEST_OWNER_PASSWORD = "owner-password-123"
 
 def _complete_setup_via_http(anonymous_client: TestClient) -> str:
     """Real first-run setup (which also logs in) via an HTTP round-trip --
-    not a bypass. Returns the CSRF token that setup established, which is
-    both the value now in `anonymous_client`'s `csrf_token` cookie and the
-    only value that will pass `csrf_token_matches()` for this client's
-    session going forward.
+    not a bypass. Since Security Phase Step 5, `POST /auth/setup` no
+    longer redirects straight to /cases: it shows the one-time recovery
+    key first (see app/api/auth.py::post_setup), so this also completes
+    that acknowledgement step -- exactly what a real owner does -- before
+    the session is usable for anything else. Returns the CSRF token that
+    setup established, which is both the value now in `anonymous_client`'s
+    `csrf_token` cookie and the only value that will pass
+    `csrf_token_matches()` for this client's session going forward.
     """
     csrf_response = anonymous_client.get("/auth/setup")
     csrf_token = anonymous_client.cookies.get("csrf_token") or csrf_response.cookies.get("csrf_token")
@@ -117,9 +122,21 @@ def _complete_setup_via_http(anonymous_client: TestClient) -> str:
             "confirm_password": TEST_OWNER_PASSWORD,
             "csrf_token": csrf_token,
         },
+    )
+    assert setup_response.status_code == 200, setup_response.text
+    recovery_key_match = re.search(r"<code>([^<]+)</code>", setup_response.text)
+    assert recovery_key_match is not None, setup_response.text
+
+    ack_response = anonymous_client.post(
+        "/auth/recovery-key/acknowledge",
+        data={
+            "csrf_token": csrf_token,
+            "recovery_key": recovery_key_match.group(1),
+            "confirmed": "yes",
+        },
         follow_redirects=False,
     )
-    assert setup_response.status_code == 303, setup_response.text
+    assert ack_response.status_code == 303, ack_response.text
     return csrf_token
 
 

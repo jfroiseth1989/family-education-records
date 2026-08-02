@@ -35,6 +35,7 @@
     {% set current_session = header_session(request) %}
     <div class="account-area">
       {% if current_session %}
+        <a href="/account/recovery-key">Recovery key</a>
         <form method="post" action="/auth/lock" class="inline-auth-form">
           <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
           <button type="submit" class="btn-secondary">Lock</button>

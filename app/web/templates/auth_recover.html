@@ -1,0 +1,38 @@
+{% extends "auth_base.html" %}
+{% block title %}Reset your password — FERChronos{% endblock %}
+{% block content %}
+  <section class="panel auth-panel">
+    <h1>Reset your password</h1>
+    <p class="hint">
+      Enter your recovery key exactly as it was shown to you (dashes and
+      case don't matter) along with a new password. There is no other way
+      to reset a forgotten password — no security question, no email
+      link, no support desk. If you don't have your recovery key, this
+      application cannot be recovered.
+    </p>
+    {% if error %}
+      <p class="hint auth-error">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/auth/recover">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>
+        Recovery key
+        <input type="text" name="recovery_key" required autocomplete="off" autofocus placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+      </label>
+      <label>
+        New password
+        <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+      </label>
+      <label>
+        Confirm new password
+        <input type="password" name="confirm_new_password" required minlength="8" autocomplete="new-password">
+      </label>
+      <p class="hint">
+        Resetting your password also issues a new recovery key — the one
+        you just used will no longer work — and signs out any other open
+        session.
+      </p>
+      <button type="submit">Reset password</button>
+    </form>
+  </section>
+{% endblock %}

@@ -1,5 +1,5 @@
-"""First-run setup, login, lock, and logout routes (Security Phase Steps
-2 and 4).
+"""First-run setup, login, lock, logout, and password-recovery routes
+(Security Phase Steps 2, 4, and 5).
 
 Now enforced application-wide by
 `app.core.auth.enforcement.AuthEnforcementMiddleware` -- every route
@@ -23,7 +23,22 @@ since Step 1, unused until now -- see that model's docstring). The
 5th consecutive failure locks login out for 60 seconds; each further
 failure while still counting doubles that, capped at 15 minutes
 (`_lockout_seconds_for()`). A successful login resets the counter and
-clears the lock -- see `post_login()`.
+clears the lock -- see `post_login()`. Step 5's recovery flow
+(`post_recover()`) shares this exact same counter/lock: a wrong recovery
+key is, threat-model-wise, the same kind of "someone without this
+account's secret" event as a wrong password, and reusing it needs no
+schema change.
+
+Step 5 adds recovery-key issuance and password recovery. A key is
+generated and shown exactly once, at the end of `post_setup()` and again
+at the end of `post_recover()` (which rotates it -- a recovery key is
+single-use, since leaving it valid forever after using it once would
+turn it into a permanent secondary password with no rotation). The
+authenticated owner can also rotate it deliberately, at any time, via
+`app.api.account` -- deliberately *not* under this router's `/auth/*`
+prefix, because that prefix is the enforcement middleware's public
+allowlist and rotating a live recovery key must require a valid session,
+unlike everything else here.
 """
 
 from __future__ import annotations
@@ -38,7 +53,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.auth.csrf import get_or_create_csrf_token, set_csrf_cookie, verify_csrf
 from app.core.auth.passwords import hash_password, verify_password_constant_time
-from app.core.auth.session import SESSION_COOKIE_NAME, create_session, delete_session
+from app.core.auth.recovery import issue_recovery_key, normalize_recovery_key
+from app.core.auth.session import (
+    SESSION_COOKIE_NAME,
+    create_session,
+    delete_all_sessions,
+    delete_session,
+)
 from app.db.models import AppAuth
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -76,7 +97,25 @@ def _is_locked_out(auth: AppAuth) -> bool:
     return auth.locked_until.replace(tzinfo=None) > _now().replace(tzinfo=None)
 
 
-def _set_session_cookie(response: RedirectResponse, session_id: str) -> None:
+def _record_failed_attempt(db: Session, auth: AppAuth) -> bool:
+    """Shared by `post_login()` and `post_recover()`: one more failure
+    (wrong password or wrong recovery key -- either way, someone without
+    this account's secret) against the same counter/lock. Commits and
+    returns whether the account is now locked out as a result.
+    """
+    auth.failed_login_attempts += 1
+    if auth.failed_login_attempts >= _LOCKOUT_THRESHOLD:
+        auth.locked_until = _now() + timedelta(seconds=_lockout_seconds_for(auth.failed_login_attempts))
+    db.commit()
+    return _is_locked_out(auth)
+
+
+def _reset_lockout(auth: AppAuth) -> None:
+    auth.failed_login_attempts = 0
+    auth.locked_until = None
+
+
+def _set_session_cookie(response: Response, session_id: str) -> None:
     response.set_cookie(
         SESSION_COOKIE_NAME,
         session_id,
@@ -86,6 +125,25 @@ def _set_session_cookie(response: RedirectResponse, session_id: str) -> None:
         # docs/PRIVACY_SECURITY.md §2. `Secure` would add nothing here.
         secure=False,
     )
+
+
+def _recovery_key_response(request: Request, recovery_key: str, *, error: str | None = None) -> Response:
+    """Render the shared "here is your recovery key -- confirm you saved
+    it" page. Every caller -- setup, recovery, an authenticated rotation
+    in app.api.account, or an unconfirmed resubmission from
+    `post_acknowledge_recovery_key()` -- passes the real key value each
+    time; it round-trips through that route's hidden form field on a
+    retry rather than this ever persisting the raw key server-side.
+    """
+    csrf_token = get_or_create_csrf_token(request)
+    templates = request.app.state.templates
+    response = templates.TemplateResponse(
+        request,
+        "auth_recovery_key.html",
+        {"recovery_key": recovery_key, "error": error, "csrf_token": csrf_token},
+    )
+    set_csrf_cookie(response, csrf_token)
+    return response
 
 
 @router.get("/setup", response_class=HTMLResponse)
@@ -143,17 +201,19 @@ def post_setup(
         set_csrf_cookie(response, new_csrf_token)
         return response
 
-    # Recovery-key generation is Security Phase Step 5, not this step --
-    # recovery_key_hash stays NULL here on purpose; see the AppAuth
-    # model docstring.
     auth = AppAuth(password_hash=hash_password(password))
     db.add(auth)
     db.flush()  # assigns nothing session-relevant, but keeps the pattern consistent with the rest of this codebase
 
+    recovery_key = issue_recovery_key(auth)
     session = create_session(db, auth)
     db.commit()
 
-    response = RedirectResponse(url="/cases", status_code=303)
+    # Straight to the recovery-key display, not /cases -- the owner is
+    # already fully authenticated (the session above is real and its
+    # cookie is set on this very response), but must see and acknowledge
+    # the key before going anywhere else in the normal flow.
+    response = _recovery_key_response(request, recovery_key)
     _set_session_cookie(response, session.session_id)
     return response
 
@@ -216,19 +276,11 @@ def post_login(
     # see that function's docstring.
     password_hash = auth.password_hash if auth is not None else None
     if not verify_password_constant_time(password, password_hash):
-        if auth is not None:
-            auth.failed_login_attempts += 1
-            if auth.failed_login_attempts >= _LOCKOUT_THRESHOLD:
-                auth.locked_until = _now() + timedelta(
-                    seconds=_lockout_seconds_for(auth.failed_login_attempts)
-                )
-            db.commit()
-            if _is_locked_out(auth):
-                return _login_error_response(request, _LOCKOUT_MESSAGE, 429)
+        if auth is not None and _record_failed_attempt(db, auth):
+            return _login_error_response(request, _LOCKOUT_MESSAGE, 429)
         return _login_error_response(request, "Incorrect password.", 401)
 
-    auth.failed_login_attempts = 0
-    auth.locked_until = None
+    _reset_lockout(auth)
 
     session = create_session(db, auth)
     db.commit()
@@ -236,6 +288,132 @@ def post_login(
     response = RedirectResponse(url="/cases", status_code=303)
     _set_session_cookie(response, session.session_id)
     return response
+
+
+@router.get("/recover", response_class=HTMLResponse)
+def get_recover(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Show the "reset your password with your recovery key" form, or
+    redirect to /auth/setup if no account exists yet -- same reasoning
+    as get_login().
+    """
+    if _get_auth(db) is None:
+        return RedirectResponse(url="/auth/setup", status_code=303)
+
+    csrf_token = get_or_create_csrf_token(request)
+    templates = request.app.state.templates
+    response = templates.TemplateResponse(
+        request, "auth_recover.html", {"error": None, "csrf_token": csrf_token}
+    )
+    set_csrf_cookie(response, csrf_token)
+    return response
+
+
+def _recover_error_response(request: Request, message: str, status_code: int) -> Response:
+    new_csrf_token = get_or_create_csrf_token(request)
+    templates = request.app.state.templates
+    response = templates.TemplateResponse(
+        request,
+        "auth_recover.html",
+        {"error": message, "csrf_token": new_csrf_token},
+        status_code=status_code,
+    )
+    set_csrf_cookie(response, new_csrf_token)
+    return response
+
+
+@router.post("/recover")
+def post_recover(
+    request: Request,
+    recovery_key: str = Form(...),
+    new_password: str = Form(...),
+    confirm_new_password: str = Form(...),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Reset the password using the recovery key, entirely in place of
+    the forgotten one -- there is no security question, hint, hidden
+    master password, or cloud/support-desk path around this (see this
+    module's and app/core/auth/recovery.py's docstrings). On success:
+    the password is replaced, the recovery key is rotated (the one just
+    used is never valid again -- see `issue_recovery_key()`), every
+    existing session anywhere is invalidated, and the owner is signed
+    into a brand-new session and shown the new key to save.
+    """
+    verify_csrf(request, csrf_token)
+
+    auth = _get_auth(db)
+
+    # Same shared lockout as post_login() -- see _record_failed_attempt()
+    # and this module's docstring for why reusing it here is deliberate.
+    if auth is not None and _is_locked_out(auth):
+        return _recover_error_response(request, _LOCKOUT_MESSAGE, 429)
+
+    # verify_password_constant_time() works for any Argon2id-hashed
+    # secret, not just a password -- recovery_key_hash is exactly such a
+    # hash (or None, for an account that predates Step 5 or has never had
+    # a key issued, which this call handles identically to "no account
+    # yet": a real Argon2 verify against a dummy hash, same rejection).
+    recovery_key_hash = auth.recovery_key_hash if auth is not None else None
+    if not verify_password_constant_time(normalize_recovery_key(recovery_key), recovery_key_hash):
+        if auth is not None and _record_failed_attempt(db, auth):
+            return _recover_error_response(request, _LOCKOUT_MESSAGE, 429)
+        return _recover_error_response(request, "Invalid recovery key.", 401)
+
+    error = None
+    if len(new_password) < _MIN_PASSWORD_LENGTH:
+        error = f"Password must be at least {_MIN_PASSWORD_LENGTH} characters."
+    elif new_password != confirm_new_password:
+        error = "Passwords do not match."
+    if error:
+        return _recover_error_response(request, error, 400)
+
+    auth.password_hash = hash_password(new_password)
+    auth.password_updated_at = _now()
+    _reset_lockout(auth)
+    delete_all_sessions(db)
+
+    new_recovery_key = issue_recovery_key(auth)
+    session = create_session(db, auth)
+    db.commit()
+
+    response = _recovery_key_response(request, new_recovery_key)
+    _set_session_cookie(response, session.session_id)
+    return response
+
+
+@router.post("/recovery-key/acknowledge")
+def post_acknowledge_recovery_key(
+    request: Request,
+    recovery_key: str = Form(...),
+    confirmed: str = Form(""),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The "I have saved this recovery key" step at the end of setup,
+    recovery, or an authenticated rotation (app.api.account). Lives
+    under the public `/auth/*` prefix on purpose -- unlike those routes,
+    it doesn't itself require a session (the enforcement middleware
+    never checks one here), but that's safe rather than a gap: this
+    route performs no mutation at all. The recovery-key hash was already
+    committed by whichever route sent the owner here; this one only
+    echoes the same key back on an unconfirmed submission (never a fresh
+    one) and redirects to /cases on confirmation -- a redirect to a
+    protected route the enforcement middleware still gates normally, so
+    an unauthenticated caller gains nothing by hitting this directly.
+
+    Unconfirmed submissions (the checkbox wasn't checked) re-show the
+    exact same key rather than losing it -- it round-trips through a
+    hidden field precisely so a missed checkbox never means "generate an
+    unrelated new key just to see it again."
+    """
+    verify_csrf(request, csrf_token)
+
+    if not confirmed:
+        return _recovery_key_response(
+            request, recovery_key, error="Please confirm you have saved your recovery key."
+        )
+
+    return RedirectResponse(url="/cases", status_code=303)
 
 
 @router.post("/lock")

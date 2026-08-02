@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Recovery key — FERChronos{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>Recovery key</h1>
+    <p class="hint">
+      Your recovery key is the only way to reset your password if you
+      forget it. FERChronos never stores or displays it again after it
+      was first shown to you — only a secure verifier is kept, so even
+      this application cannot show you your current key.
+    </p>
+    <p class="hint">
+      {% if recovery_key_updated_at %}
+        Last generated: {{ recovery_key_updated_at }}
+      {% else %}
+        No recovery key has been generated for this account yet.
+      {% endif %}
+    </p>
+    <p class="hint auth-error">
+      Generating a new key immediately invalidates the current one — if
+      you have it written down somewhere, that copy will stop working.
+      Losing both your password and your recovery key means there is no
+      way back into this application; once whole-vault encryption is
+      added in a future update, it will mean the vault's contents
+      themselves become permanently unreadable.
+    </p>
+    <form method="post" action="/account/recovery-key/regenerate">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+      <button type="submit">Generate a new recovery key</button>
+    </form>
+  </section>
+{% endblock %}
