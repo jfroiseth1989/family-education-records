@@ -81,7 +81,7 @@
     {% if verified_facts %}
       <table class="data-table">
         <thead>
-          <tr><th>Statement</th><th>Type</th><th>Date</th><th>Confidence</th><th>Source</th><th>Cited from</th><th>Created</th></tr>
+          <tr><th>Statement</th><th>Type</th><th>Date</th><th>Confidence</th><th>Source</th><th>Cited from</th><th>Created</th><th>Timeline</th></tr>
         </thead>
         <tbody>
           {% for fact in verified_facts %}
@@ -97,6 +97,7 @@
                 {% endfor %}
               </td>
               <td>{{ fact.created_at }} by {{ fact.created_by }}</td>
+              <td><a href="/cases/{{ case.case_id }}/timeline">Attach to event</a></td>
             </tr>
           {% endfor %}
         </tbody>

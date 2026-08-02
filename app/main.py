@@ -22,7 +22,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import annotations, cases, documents, facts, ocr, search, tags
+from app.api import annotations, cases, documents, facts, ocr, search, tags, timeline
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
@@ -99,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ocr.router)
     app.include_router(search.router)
     app.include_router(tags.router)
+    app.include_router(timeline.router)
 
     @app.get("/")
     def root() -> RedirectResponse:

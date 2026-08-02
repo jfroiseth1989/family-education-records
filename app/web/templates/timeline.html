@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Timeline — {{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
+  <h1>Timeline — {{ case.label }}</h1>
+  <p class="hint">
+    Every event here is built only from verified facts you've already
+    reviewed — never directly from raw document text or a machine
+    observation. An event's date comes from its date-source fact and
+    never changes after creation; to correct it, delete the event and
+    create a new one.
+  </p>
+
+  <section class="panel">
+    <h2>Filter</h2>
+    <form method="get" action="/cases/{{ case.case_id }}/timeline">
+      <label>
+        Event type
+        <select name="event_type_id">
+          <option value="">(all types)</option>
+          {% for et in event_types %}
+            <option value="{{ et.type_id }}" {% if selected_event_type_id == et.type_id %}selected{% endif %}>{{ et.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        From date
+        <input type="date" name="start_date" value="{{ start_date }}">
+      </label>
+      <label>
+        To date
+        <input type="date" name="end_date" value="{{ end_date }}">
+      </label>
+      <button type="submit">Apply filter</button>
+      <a href="/cases/{{ case.case_id }}/timeline">Clear</a>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Events ({{ event_rows | length }})</h2>
+    {% if event_rows %}
+      <ul class="annotation-list">
+        {% for row in event_rows %}
+          <li>
+            {% if row.gap_days is not none %}
+              <p class="meta">&mdash; {{ row.gap_days }} day{{ "s" if row.gap_days != 1 else "" }} since the previous event &mdash;</p>
+            {% endif %}
+            <strong>{{ row.event.event_date.strftime("%Y-%m-%d") }}</strong>
+            {% if row.event.event_date_precision == "range" and row.event.event_date_range_end %}
+              &ndash; {{ row.event.event_date_range_end.strftime("%Y-%m-%d") }}
+            {% elif row.event.event_date_precision == "approximate" %}
+              (approximate)
+            {% endif %}
+            &nbsp;<span class="tag-badge">{{ row.event.event_type.name }}</span>
+            &nbsp;<strong>{{ row.event.title }}</strong>
+            {% if row.event.description %}<p>{{ row.event.description }}</p>{% endif %}
+
+            <p class="meta">
+              Date source:
+              {% if row.date_source_fact %}
+                {% for c in row.date_source_fact.citations %}
+                  <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ row.date_source_fact.statement }}&rdquo;</a>{% if not loop.last %}, {% endif %}
+                {% endfor %}
+              {% else %}
+                &mdash;
+              {% endif %}
+            </p>
+
+            {% if row.supporting_facts %}
+              <p class="meta">Supporting facts:</p>
+              <ul>
+                {% for fact in row.supporting_facts %}
+                  <li>
+                    {{ fact.statement }}
+                    {% for c in fact.citations %}
+                      &mdash; <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ c.quoted_text }}&rdquo;</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+
+            <details>
+              <summary>Attach a supporting fact</summary>
+              <form method="post" action="/cases/{{ case.case_id }}/timeline/{{ row.event.event_id }}/attach-fact">
+                <label>
+                  Verified fact
+                  <select name="fact_id" required>
+                    {% for fact in all_facts %}
+                      <option value="{{ fact.fact_id }}">{{ fact.statement }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+                <button type="submit">Attach</button>
+              </form>
+            </details>
+
+            <form method="post" action="/cases/{{ case.case_id }}/timeline/{{ row.event.event_id }}/delete" style="display:inline">
+              <button type="submit" class="tag-remove" title="Delete event">Delete event</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty-state">No timeline events yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Create a timeline event</h2>
+    {% if not date_source_candidates %}
+      <p class="empty-state">
+        No verified facts with a date exist yet — review a pending date
+        observation, or assert one directly from a citation, on the
+        <a href="/cases/{{ case.case_id }}/facts">Facts &amp; Observations</a> page first.
+      </p>
+    {% else %}
+      <form method="post" action="/cases/{{ case.case_id }}/timeline">
+        <label>
+          Event type
+          <select name="event_type" required>
+            {% for et in event_types %}
+              <option value="{{ et.name }}">{{ et.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Title
+          <input type="text" name="title" maxlength="300" required>
+        </label>
+        <label>
+          Description (optional)
+          <textarea name="description" rows="2"></textarea>
+        </label>
+        <label>
+          Date-source fact
+          <select name="date_fact_id" required>
+            {% for fact in date_source_candidates %}
+              <option value="{{ fact.fact_id }}">{{ fact.fact_date.strftime("%Y-%m-%d") }} — {{ fact.statement }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <p class="hint">
+          The event's date is copied from this fact and never changes
+          afterward. To correct it later, delete the event and create a
+          new one with the right fact.
+        </p>
+        <fieldset>
+          <legend>Supporting facts (optional)</legend>
+          {% for fact in all_facts %}
+            <label>
+              <input type="checkbox" name="additional_fact_ids" value="{{ fact.fact_id }}">
+              {{ fact.statement }}
+            </label>
+          {% endfor %}
+        </fieldset>
+        <label>
+          Date precision
+          <select name="event_date_precision">
+            {% for p in event_date_precisions %}
+              <option value="{{ p }}" {% if p == "exact" %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Range end date (only if precision is "range")
+          <input type="date" name="event_date_range_end">
+        </label>
+        <button type="submit">Create timeline event</button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

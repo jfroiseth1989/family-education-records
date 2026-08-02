@@ -95,7 +95,16 @@ def _validate_precision(precision: str, range_end: datetime | None, event_date: 
     if precision == "range":
         if range_end is None:
             raise ValueError("event_date_range_end is required when event_date_precision is 'range'.")
-        if range_end < event_date:
+        # SQLite doesn't reliably round-trip tzinfo on DateTime(timezone=True)
+        # columns -- a value just read back from the DB in a fresh session
+        # (like `event_date` almost always is here) comes back naive, while
+        # a freshly-constructed value (like a route's just-parsed form
+        # input) stays timezone-aware. Comparing them directly raises
+        # TypeError. Every DateTime(timezone=True) column in this app is
+        # effectively naive-UTC on disk regardless of what Python object
+        # wrote it, so stripping tzinfo from both sides before comparing is
+        # the correct normalization, not a workaround.
+        if range_end.replace(tzinfo=None) < event_date.replace(tzinfo=None):
             raise ValueError("event_date_range_end must be on or after the date-source fact's date.")
     elif range_end is not None:
         raise ValueError(
@@ -280,3 +289,48 @@ def compute_date_gaps(events: list[TimelineEvent]) -> list[int | None]:
             gaps.append((event.event_date.date() - previous_date.date()).days)
         previous_date = event.event_date
     return gaps
+
+
+def list_event_types(db: Session) -> list[EventType]:
+    """Active event types, for populating an event-type selector in the UI."""
+    return db.scalars(select(EventType).where(EventType.is_active.is_(True)).order_by(EventType.name)).all()
+
+
+def list_date_source_candidates(db: Session, case_id: int) -> list[VerifiedFact]:
+    """Non-deleted `fact_type='date'` facts with a `fact_date`, for a case.
+
+    Exactly the set of facts eligible to anchor a new timeline event --
+    see `_get_date_source_fact()`'s validation, which this listing
+    mirrors so nothing offered in the UI's date-source selector could
+    ever fail that check.
+    """
+    return db.scalars(
+        select(VerifiedFact)
+        .where(
+            VerifiedFact.case_id == case_id,
+            VerifiedFact.deleted_at.is_(None),
+            VerifiedFact.fact_date.is_not(None),
+        )
+        .order_by(VerifiedFact.fact_date)
+    ).all()
+
+
+def get_event_facts(db: Session, event_id: int) -> tuple[VerifiedFact | None, list[VerifiedFact]]:
+    """The (date-source fact, [supporting facts]) for one timeline event.
+
+    date-source is None only if the event's own data is somehow
+    inconsistent (should never happen given create_timeline_event()'s
+    invariant) -- callers should treat None defensively, not assume it.
+    """
+    links = db.scalars(
+        select(TimelineEventFact).where(TimelineEventFact.event_id == event_id)
+    ).all()
+    date_source = None
+    supporting: list[VerifiedFact] = []
+    for link in links:
+        fact = db.get(VerifiedFact, link.fact_id)
+        if link.is_date_source:
+            date_source = fact
+        else:
+            supporting.append(fact)
+    return date_source, supporting
