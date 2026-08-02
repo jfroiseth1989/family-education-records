@@ -1,6 +1,10 @@
-# FERPA Evidence Manager — Privacy & Security Plan (Phase 1)
+# FERPA Evidence Manager (FERChronos) — Privacy & Security Plan
 
-Status: **Draft for review.**
+Status: **§1-4 and §7-10 reflect the Phase 1 design and remain current.
+§5 (at-rest protection) and §6 (access control) are updated for the
+Security Phase, which added local password authentication, CSRF
+protection, session management, and password recovery — see each
+section below for exactly what's implemented versus still planned.**
 
 This document defines the privacy and security posture the architecture is
 required to uphold. It is a design constraint, not an afterthought — every
@@ -107,26 +111,136 @@ a git working tree.**
   document (`verified_relationship_citations`) — there is no path to an
   uncited edge, verified or otherwise.
 
-## 5. At-rest protection (open decision — see PROJECT_PLAN.md #2)
+## 5. At-rest protection
 
-Two layers are available and not mutually exclusive:
+**Current status: application-level login gates the web UI (§6), but the
+vault on disk is not yet encrypted.** Two layers are relevant and not
+mutually exclusive:
+
 - **OS-level full-disk encryption** (BitLocker on Windows, FileVault on
-  macOS) — assumed as a baseline the user is responsible for enabling; the
-  app can check and warn if it's off, but can't enable it itself.
-- **Application-level encryption** (SQLCipher in place of plain SQLite, or an
-  app passphrase gate) — stronger if the machine is shared or could be lost
-  while unlocked, but adds real complexity (key management, "what if you
-  forget the passphrase" recovery story). Recommend deciding **before**
-  Phase 1 implementation starts, since swapping SQLite → SQLCipher after
-  real case data exists is more painful than deciding up front.
+  macOS) — the current baseline the user is responsible for enabling; the
+  app can check and warn if it's off, but can't enable it itself. This is
+  the only protection today against someone with direct filesystem access
+  to the vault (a stolen drive, a second OS account with file access,
+  etc.) while the computer is off or the disk is otherwise locked.
+- **Application-level encryption** (whole-database encryption via
+  SQLCipher, envelope-encrypted so a password/recovery-key change only
+  re-wraps a small key rather than the whole file) — architecture and
+  migration-risk analysis produced in
+  `docs/SECURITY_ENCRYPTION_AT_REST.md`. That document is **planning
+  only**: no vault is encrypted yet, and no migration runs until a
+  separate, explicitly approved implementation step. The biggest reason
+  this can't be silently "just turned on" is FTS5: SQLite's full-text
+  search needs plaintext to index, so field-level encryption would break
+  search — only whole-database encryption preserves it, which is why this
+  needed its own design pass rather than being folded into the
+  authentication work in §6.
 
-## 6. Access control
+Until application-level encryption ships, the password/session/CSRF/
+lockout controls in §6 protect the **web UI** — they gate what a browser
+on this machine can see and do. They do not, by themselves, protect the
+vault files on disk from someone who can read them directly (bypassing
+the app entirely) if the disk itself isn't encrypted. Both layers matter;
+neither substitutes for the other.
 
-- v1 assumes a single local OS user account model: whoever is logged into
-  the computer can open the app. No built-in multi-user login for a
-  single-family local tool.
-- If the computer is shared, the mitigations are OS-level user separation or
-  the optional app passphrase from §5 — not a custom auth system.
+## 6. Access control (authentication)
+
+FERChronos is single-owner software — there is no username, no multi-user
+login, and no account-existence disclosure anywhere in the UI (wrong
+password and "no account yet" are indistinguishable both in wording and
+in response timing). The web UI is gated by a local password the owner
+sets on first run; everything below is implemented, not planned.
+
+**Authentication.**
+- First-run setup asks for a password (minimum 8 characters), hashed with
+  Argon2id (`app/core/auth/passwords.py`) — the plaintext password is
+  never stored, logged, or transmitted anywhere.
+- Login/lock/logout are ordinary POST routes (`/auth/login`, `/auth/lock`,
+  `/auth/logout`) protected the same way every other state-changing route
+  is (CSRF, below). "Lock" and "logout" are functionally identical (both
+  fully end the session); "lock" only changes the login page's copy.
+
+**Deny-by-default route protection.**
+- Every route requires a valid session by default
+  (`app.core.auth.enforcement.AuthEnforcementMiddleware`). Only `/auth/*`
+  (the setup/login/lock/logout/recovery pages themselves) and `/static/*`
+  (CSS/JS, no case data) are public — there is no per-route opt-in list to
+  keep in sync as routes are added; a new route is protected automatically
+  simply by existing outside those two prefixes.
+- This includes direct document-file and page-image URLs
+  (`/documents/{id}/file`, `/documents/{id}/pages/{n}/image`) — a raw,
+  unauthenticated link to a document never bypasses login.
+- Every response this middleware handles carries `Cache-Control:
+  no-store, private` (except `/static/*`, which is safe to cache), so
+  document bytes, page images, and any page with student data are never
+  retained by a browser or intermediary cache.
+
+**CSRF protection.**
+- A double-submit-cookie token protects every state-changing request
+  (POST/PUT/PATCH/DELETE) application-wide, validated in constant time.
+  The `/auth/*` forms validate it themselves; every other route is
+  covered centrally by the same enforcement middleware, so no route can
+  forget to check it.
+- Non-browser/API clients: fetch any page once to receive the
+  `csrf_token` cookie (set no later than `/auth/login` or `/auth/setup`,
+  both of which necessarily precede any authenticated request), then send
+  that value back on mutating requests as the `X-CSRF-Token` header —
+  no need to multipart-encode a form field alongside a file upload.
+
+**Sessions.**
+- Server-side sessions (`app_sessions`) — the browser cookie carries only
+  an opaque random token, never session data itself, and a session id is
+  only ever minted at successful login (never reused/upgraded from a
+  pre-auth cookie), which rules out session fixation by construction.
+- **15-minute inactivity auto-lock**, sliding forward on every valid
+  authenticated request — not merely on login.
+- **12-hour absolute session expiry**, independent of activity.
+- An expired or inactive session's row is hard-deleted the moment it's
+  detected (not just rejected in place), and the browser's session cookie
+  is cleared — a full password login is required afterward either way.
+  Session rows are the one deliberate exception to this app's otherwise
+  append-only/never-deleted data model (see the `AppSession` docstring in
+  `app/db/models.py`): they're ephemeral security state, not an
+  educational record.
+
+**Failed-login throttling.**
+- After 5 consecutive failed attempts, login locks out for 60 seconds;
+  each further failure while still locked doubles the wait, capped at 15
+  minutes. An active lockout rejects every attempt immediately — including
+  a correct password — so a sustained attacker can't extend the lock
+  indefinitely by continuing to hammer it. The lockout message is fixed
+  and generic (no attempt count, no unlock timestamp). A successful login
+  resets the counter.
+
+**Password recovery.**
+- A cryptographically random recovery key (~118 bits of entropy, 6
+  groups of 4 characters from an alphabet excluding easily-confused
+  characters) is generated at first-run setup and shown to the owner
+  exactly once, with a required "I have saved this" confirmation before
+  continuing. Only its Argon2id hash is ever stored.
+- `/auth/recover` resets the password given a valid recovery key. On
+  success: the key is rotated (single-use — the one just used never
+  works again), every existing session anywhere is invalidated, the
+  failed-login counter resets, and the owner is signed into a fresh
+  session showing their new key.
+- An authenticated owner can also rotate the key deliberately at any time
+  (`/account/recovery-key`), independent of the password.
+- **There are no security questions, password hints, hidden master
+  password, or cloud/support-desk recovery of any kind.** Losing both the
+  password and the recovery key means there is no way back into the
+  application today, and once at-rest encryption (§5) ships, it will mean
+  the vault's contents themselves become permanently unreadable — not
+  just the web UI locked. This is stated explicitly to the owner
+  everywhere a recovery key is shown.
+
+**What this does and doesn't cover.** This is a single-local-user access
+gate for the web UI, not a multi-tenant or network-facing auth system —
+the loopback-only binding in §2 is what actually keeps the app
+unreachable from other machines; login/CSRF/sessions/lockout protect
+against another process or user *on this machine* casually opening a
+browser tab to it. See §5 for what still relies on OS-level disk
+encryption until application-level encryption ships, and §8 for the full
+threat model.
 
 ## 7. Backups
 
@@ -144,12 +258,27 @@ Two layers are available and not mutually exclusive:
 **In scope / mitigated:**
 - Accidental upload of case data to GitHub or any cloud service.
 - Casual snooping by anyone without access to the machine/OS account.
+- Casual snooping by another user or process *on this machine* that
+  doesn't know the password — see §6. Locking or logging out (or letting
+  the 15-minute inactivity timeout do it automatically) closes the web
+  UI's access even while the computer itself stays unlocked.
+- Repeated password/recovery-key guessing against the web UI (§6's
+  escalating lockout) — not a defense against brute-forcing the ~118-bit
+  recovery key itself, which is computationally infeasible regardless.
 - Undetected corruption or tampering of original records (hash verification).
 - Loss of evidentiary traceability (every claim cites an exact source).
 - Silent conflation of OCR guesses with verified document text.
 
 **Explicitly out of scope for this design:**
-- Someone with full access to your unlocked, already-decrypted computer.
+- Someone with full access to your unlocked, already-decrypted computer
+  *and* an already-unlocked FERChronos session (e.g. an open browser tab
+  within the 15-minute inactivity window) — the OS-level access itself is
+  outside this app's control, and defeating an unlocked session on the
+  same machine isn't something an in-browser login screen can prevent.
+- Someone with direct filesystem access to the vault, bypassing the app
+  and its login entirely, on a machine without full-disk encryption
+  enabled (§5) — until at-rest encryption ships, the login/session
+  controls in §6 protect the web UI, not the files on disk.
 - Malware already present on the machine.
 - Nation-state-level adversaries.
 - Legal correctness of any deadline, rule, or characterization — the app

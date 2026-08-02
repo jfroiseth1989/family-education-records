@@ -53,6 +53,39 @@ citation is immutable once created; and every state-changing action is
 logged to an append-only audit trail (per-document chain of custody, or
 the case-level audit log for entities that span documents).
 
+## Security
+
+The web UI is protected by a local password the owner sets on first run
+(see "Running it" below) — Argon2id-hashed, never stored in plaintext.
+Every route requires a valid session by default, including direct
+document-file and page-image links; the only public routes are the
+setup/login/recovery pages themselves and static assets. Every
+state-changing request is CSRF-protected. Sessions auto-lock after 15
+minutes of inactivity and expire absolutely after 12 hours regardless of
+activity; an expired session is deleted outright and requires a full
+password login again. Repeated failed login attempts lock out with an
+escalating delay (60 seconds, doubling, capped at 15 minutes).
+
+Forgot your password? A one-time recovery key is shown during first-run
+setup (and can be regenerated any time while logged in, at
+`/account/recovery-key`) — it's the **only** way to reset a forgotten
+password. There are no security questions, password hints, hidden master
+password, or cloud/support-desk recovery of any kind, so save it
+somewhere safe. Using it to reset your password issues you a new one
+immediately, since a recovery key is single-use.
+
+**Not yet implemented: encryption at rest.** The vault database and
+files on disk are not currently encrypted by the application — enable
+your OS's full-disk encryption (BitLocker/FileVault) as the current
+baseline. An architecture and migration-risk analysis for whole-database
+encryption exists at
+[`docs/SECURITY_ENCRYPTION_AT_REST.md`](docs/SECURITY_ENCRYPTION_AT_REST.md),
+but it's planning only — no vault is encrypted by anything in this
+repository yet.
+
+See [`docs/PRIVACY_SECURITY.md`](docs/PRIVACY_SECURITY.md) §5-6 for the
+full design and threat model.
+
 Planning documents:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture, tech
   stack, folder structure
@@ -61,6 +94,9 @@ Planning documents:
   plan and threat model
 - [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) — roadmap, open decisions,
   and risks
+- [`docs/SECURITY_ENCRYPTION_AT_REST.md`](docs/SECURITY_ENCRYPTION_AT_REST.md)
+  — whole-database encryption architecture and migration-risk analysis
+  (planning only; not yet implemented)
 - `docs/PHASE_1_FREEZE.md`, `docs/PHASE_1_REVIEW.md`,
   `docs/PHASE_2_PLAN.md`, `docs/PHASE_2_FREEZE.md`,
   `docs/PHASE_2_STEP_1_FREEZE.md`, `docs/PHASE_3_PLAN.md`,
@@ -80,8 +116,15 @@ scripts\start.bat         # Windows
 
 This creates a `.venv/`, installs dependencies from PyPI only, runs
 database migrations, and starts the app at `http://127.0.0.1:8420`
-(loopback-only — never exposed on your network), opening it in your
-browser. Re-running is safe; setup steps are skipped if already done.
+(loopback-only — never exposed on your network). The script waits until
+the server is actually ready before opening your browser to it, rather
+than opening immediately and risking a connection-refused error.
+Re-running is safe; setup steps are skipped if already done.
+
+**First run only:** you'll be asked to create a password (this protects
+the web UI — see "Security" above) and shown a one-time recovery key.
+Save that key somewhere safe before continuing; it's the only way to
+reset your password if you forget it.
 
 By default, case data lives in `~/FERPA-Evidence-Vault/`. To use a
 different location, set `FERPA_VAULT_PATH` (e.g. in a `.env` file in the
@@ -112,14 +155,17 @@ sudo apt install tesseract-ocr  # Debian/Ubuntu
 .venv/bin/pytest
 ```
 
-The suite (459 tests as of Phase 4) covers every phase above end-to-end:
-the git-repo vault guardrail, file hashing/read-only enforcement,
-ingestion and version linking, the chain-of-custody and audit-log
-ledgers, migrations (including a regression guard against a recurring
-Alembic autogenerate false-positive on the FTS5 search tables),
-extraction and full-text search, tagging, annotations, OCR execution and
-correction, the verified-fact/observation review workflow, and timeline
-creation/filtering/soft-delete — plus the case/document HTTP routes
+The suite (686 tests as of the Security Phase) covers every phase above
+end-to-end: the git-repo vault guardrail, file hashing/read-only
+enforcement, ingestion and version linking, the chain-of-custody and
+audit-log ledgers, migrations (including a regression guard against a
+recurring Alembic autogenerate false-positive on the FTS5 search
+tables), extraction and full-text search, tagging, annotations, OCR
+execution and correction, the verified-fact/observation review
+workflow, timeline creation/filtering/soft-delete, and the full
+authentication layer (deny-by-default route protection, CSRF, session
+inactivity/absolute expiry, failed-login lockout, and password recovery)
+— plus the case/document HTTP routes
 end-to-end. Every test runs against a throwaway vault under pytest's
 `tmp_path` — nothing touches a real vault or the repository.
 
