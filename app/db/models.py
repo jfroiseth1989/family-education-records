@@ -19,10 +19,14 @@ Summary Layer, see docs/ARCHITECTURE.md §3.7) plus Phase 4 Step 0
 (`ai_observations.observed_date`, `verified_facts.fact_date` — structured
 dates the timeline reads from, added so Phase 4 never requires a human
 to re-enter a date already captured in a verified fact; see
-docs/PHASE_4_IMPLEMENTATION_PLAN.md §1/§3). See
+docs/PHASE_4_IMPLEMENTATION_PLAN.md §1/§3) plus Phase 4 Step 1
+(`event_types`, `timeline_events`, `timeline_event_facts` — the
+timeline schema itself, see docs/ARCHITECTURE.md §3.8 and
+docs/PHASE_4_IMPLEMENTATION_PLAN.md §3 Step 1; no core module or UI
+exists yet -- those are Steps 2-3). See
 docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3 schema and step
-breakdown. Tables for the timeline itself (Phase 4 Steps 1-3) and later
-phases (relationship graph, etc.) are intentionally not created yet.
+breakdown. Tables for later phases (relationship graph, etc.) are
+intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
 the lookup-table / EAV-metadata extensibility design in that document is
@@ -92,6 +96,14 @@ before implementation began:
                                   Created now for schema completeness;
                                   no generator or review UI exists yet
                                   (Phase 3.5 Step 1) — see the AiSummary
+                                  docstring.
+  - `event_types`               — lookup table for timeline event kinds
+                                  (Phase 4 Step 1).
+  - `timeline_events` /
+    `timeline_event_facts`      — the timeline schema. Every event has
+                                  exactly one date-source verified fact
+                                  (Phase 4 Step 1); no core module or UI
+                                  exists yet — see the TimelineEvent
                                   docstring.
 """
 
@@ -996,3 +1008,112 @@ class SummarySourceDocument(Base):
     document_id: Mapped[int] = mapped_column(
         ForeignKey("documents.document_id"), primary_key=True
     )
+
+
+class EventType(Base):
+    """Lookup table for the kind of timeline event (meeting, evaluation, ...).
+
+    Same extensibility pattern as `fact_types`/`document_types` — a new
+    kind is a row insert, not a migration. Seeded with defaults by
+    app/db/seed.py. See docs/DATA_MODEL.md "event_types" and
+    docs/PHASE_4_IMPLEMENTATION_PLAN.md §3 Step 1.
+    """
+
+    __tablename__ = "event_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class TimelineEvent(Base):
+    """A dated entry on a case's timeline (Phase 4 Step 1).
+
+    See docs/ARCHITECTURE.md §3.8 and docs/PHASE_4_IMPLEMENTATION_PLAN.md
+    §1/§2/§3. Every event has exactly one **date-source fact** -- a
+    `verified_facts` row with `fact_type='date'` and a non-null
+    `fact_date` -- recorded in `timeline_event_facts` with
+    `is_date_source=True`, plus zero or more supporting facts of any
+    type. `event_date` is copied from that fact's `fact_date` at
+    creation time by `app/core/timeline/service.py::create_timeline_event()`
+    (Step 2, not built yet) and never changes afterward -- an event
+    cannot be re-anchored to a different fact in v1, only removed via
+    soft-delete (`deleted_at`) and recreated if a correction is needed.
+
+    `created_by` is always `"manual"` and `status` is always
+    `"confirmed"` in v1 -- no system-suggested-event workflow exists
+    (docs/PHASE_4_IMPLEMENTATION_PLAN.md §1 decision 2); the columns
+    stay in the schema, matching docs/DATA_MODEL.md, for a possible
+    future suggestion queue. `event_date_source` is always the fixed
+    string `"verified_fact"` in v1, for the same reason `document_date_source`
+    exists as a column even though Phase 1/2 only ever set it to
+    `"manual"`.
+
+    `event_date_precision`/`event_date_range_end` follow the same date
+    representation pattern as `Document.document_date_precision`/
+    `document_date_range_end` -- entered independently by the human at
+    event creation, since `verified_facts.fact_date` is a single
+    point-in-time value with no precision/range concept of its own.
+
+    Never read from `document_pages`/`citations`/`ai_observations`
+    directly -- only through an already-human-confirmed `verified_facts`
+    row, via `timeline_event_facts`. No core module or UI exists yet
+    (Steps 2-3).
+    """
+
+    __tablename__ = "timeline_events"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_date_range_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    event_date_precision: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="exact"
+    )
+    # Always "verified_fact" in v1 -- see class docstring.
+    event_date_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="verified_fact"
+    )
+
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type_id: Mapped[int] = mapped_column(ForeignKey("event_types.type_id"), nullable=False)
+
+    # system-suggested / manual -- always "manual" in v1, see class docstring.
+    created_by: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    # confirmed / needs_review -- always "confirmed" in v1, see class docstring.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    case: Mapped["Case"] = relationship()
+    event_type: Mapped["EventType"] = relationship()
+
+
+class TimelineEventFact(Base):
+    """Many-to-many: which verified fact(s) support one timeline event.
+
+    See docs/DATA_MODEL.md "timeline_event_facts" and
+    docs/PHASE_4_IMPLEMENTATION_PLAN.md §3 Step 1. Exactly one row per
+    event has `is_date_source=True` -- the fact `event_date` was copied
+    from at creation -- enforced by
+    app/core/timeline/service.py::create_timeline_event() (Step 2, not
+    built yet), not a DB constraint, same style as "at least one
+    citation" in Phase 3.5. Every other attached row is
+    `is_date_source=False`, whether attached at creation or later via
+    `attach_fact_to_event()` (incremental attachment, approved for v1 --
+    docs/PHASE_4_IMPLEMENTATION_PLAN.md §1 decision 4).
+    """
+
+    __tablename__ = "timeline_event_facts"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("timeline_events.event_id"), primary_key=True
+    )
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("verified_facts.fact_id"), primary_key=True
+    )
+    is_date_source: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

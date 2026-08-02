@@ -26,7 +26,7 @@ from app.api import annotations, cases, documents, facts, ocr, search, tags
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
-from app.db.seed import seed_annotation_types, seed_document_types, seed_fact_types
+from app.db.seed import seed_annotation_types, seed_document_types, seed_event_types, seed_fact_types
 from app.db.session import make_engine, make_session_factory
 from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
 
@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed_document_types(db)
         seed_annotation_types(db)
         seed_fact_types(db)
+        seed_event_types(db)
 
     with session_factory() as db:
         # Any OCR job still "running" at this point was left that way by

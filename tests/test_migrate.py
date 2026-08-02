@@ -26,6 +26,9 @@ EXPECTED_TABLES = {
     "verified_fact_citations",
     "ai_summaries",
     "summary_source_documents",
+    "event_types",
+    "timeline_events",
+    "timeline_event_facts",
     "alembic_version",
 }
 

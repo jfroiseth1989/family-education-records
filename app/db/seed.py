@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import AnnotationType, DocumentType, FactType
+from app.db.models import AnnotationType, DocumentType, EventType, FactType
 
 # Matches the default list in docs/DATA_MODEL.md "documents". Users are not
 # limited to this list — DocumentType is a lookup table specifically so
@@ -46,6 +46,18 @@ DEFAULT_FACT_TYPES: list[tuple[str, str]] = [
     ("custom", "A claim that doesn't fit another fact type"),
 ]
 
+# Matches the example list in docs/DATA_MODEL.md "event_types" (Phase 4
+# Step 1). Same extensibility pattern as the other lookup tables.
+DEFAULT_EVENT_TYPES: list[tuple[str, str]] = [
+    ("meeting", "An IEP, 504, or other meeting"),
+    ("evaluation", "An educational, psychological, or related evaluation"),
+    ("incident", "A disciplinary or safety incident"),
+    ("communication", "A letter, email, or other communication"),
+    ("decision", "A determination or decision made by a party"),
+    ("deadline", "A deadline or due date"),
+    ("other", "Anything that doesn't fit another category"),
+]
+
 
 def seed_document_types(db: Session) -> None:
     """Insert the default document types if they don't already exist.
@@ -81,4 +93,16 @@ def seed_fact_types(db: Session) -> None:
     for name, description in DEFAULT_FACT_TYPES:
         if name not in existing_names:
             db.add(FactType(name=name, description=description))
+    db.commit()
+
+
+def seed_event_types(db: Session) -> None:
+    """Insert the default event types if they don't already exist.
+
+    Idempotent, same pattern as seed_document_types().
+    """
+    existing_names = set(db.scalars(select(EventType.name)))
+    for name, description in DEFAULT_EVENT_TYPES:
+        if name not in existing_names:
+            db.add(EventType(name=name, description=description))
     db.commit()
