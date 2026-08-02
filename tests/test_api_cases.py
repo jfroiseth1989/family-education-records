@@ -215,3 +215,31 @@ def test_student_selector_shows_no_active_student_on_list_page(client: TestClien
     client.post("/cases", data={"label": "Some Student"})
     response = client.get("/cases")
     assert "Select a student" in response.text
+
+
+def test_case_detail_shows_drag_and_drop_upload_zone(client: TestClient):
+    """FERChronos UX refinement Step 3: front-end drop zone only -- the
+    underlying <input type="file" name="file" required> that the upload
+    route actually reads must be unchanged, or ingestion silently breaks.
+    """
+    create_response = client.post(
+        "/cases", data={"label": "Dropzone Test Student"}, follow_redirects=False
+    )
+    response = client.get(create_response.headers["location"])
+
+    assert "Drag and drop a document here" in response.text
+    assert "or click to browse" in response.text
+    assert 'id="dropzone"' in response.text
+    assert 'name="file"' in response.text
+    assert "required" in response.text
+    assert 'enctype="multipart/form-data"' in response.text
+    assert 'action="/cases/' in response.text and "/documents" in response.text
+    assert "Uploading for" in response.text
+    assert "Dropzone Test Student" in response.text
+    assert '/static/dropzone.js' in response.text
+
+
+def test_dropzone_script_is_served(client: TestClient):
+    response = client.get("/static/dropzone.js")
+    assert response.status_code == 200
+    assert "dataTransfer" in response.text

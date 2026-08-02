@@ -57,11 +57,16 @@
       here is never modified. A SHA-256 hash and a chain-of-custody entry
       are recorded immediately.
     </p>
-    <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data">
-      <label>
-        File
-        <input type="file" name="file" required>
-      </label>
+    <p class="upload-for">Uploading for <strong>{{ case.display_name }}</strong></p>
+    <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data" class="upload-form">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a document to upload">
+        <p class="dropzone-primary">Drag and drop a document here</p>
+        <p class="dropzone-secondary">or click to browse</p>
+        <p class="dropzone-filename" id="dropzone-filename" hidden></p>
+        <input type="file" name="file" id="dropzone-input" required class="dropzone-input">
+      </div>
+
+      <h3 class="upload-details-heading">Document details (optional)</h3>
       <label>
         Document type
         <select name="document_type_id">
@@ -175,4 +180,5 @@
       <p class="empty-state">No documents ingested yet.</p>
     {% endif %}
   </section>
+  <script src="/static/dropzone.js"></script>
 {% endblock %}
