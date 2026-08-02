@@ -17,20 +17,37 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 
 from app.api import annotations, cases, documents, facts, ocr, search, tags, timeline
 from app.config import Settings, get_settings
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
+from app.db.models import Case
 from app.db.seed import seed_annotation_types, seed_document_types, seed_event_types, seed_fact_types
 from app.db.session import make_engine, make_session_factory
 from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def _list_students_for_selector(request: Request) -> list[Case]:
+    """Jinja global backing the persistent student selector in base.html.
+
+    A global function (not per-route context) so the header's selector
+    works on every page without every route handler needing to pass the
+    full student list through its own template context. Opens and closes
+    its own short-lived session -- fine at this app's single-user, small-
+    student-count scale (see docs/PRIVACY_SECURITY.md for the no-
+    network/local-only model this app already assumes).
+    """
+    session_factory = request.app.state.session_factory
+    with session_factory() as db:
+        return list(db.scalars(select(Case).order_by(Case.label)).all())
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -91,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=BASE_DIR / "web" / "static"), name="static")
     app.state.templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
+    app.state.templates.env.globals["all_students"] = _list_students_for_selector
 
     app.include_router(annotations.router)
     app.include_router(cases.router)

@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}OCR jobs — {{ case.label }} — FERChronos{% endblock %}
+{% block title %}OCR jobs — {{ case.display_name }} — FERChronos{% endblock %}
 {% block content %}
-  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
-  <h1>OCR jobs — {{ case.label }}</h1>
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.display_name }}</a></p>
+  <h1>OCR jobs — {{ case.display_name }}</h1>
   <p class="hint">
     A document is queued here automatically after upload if extraction
     found any page needing OCR. Jobs are processed one at a time in the

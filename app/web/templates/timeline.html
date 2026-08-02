@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Timeline — {{ case.label }} — FERChronos{% endblock %}
+{% block title %}Timeline — {{ case.display_name }} — FERChronos{% endblock %}
 {% block content %}
-  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
-  <h1>Timeline — {{ case.label }}</h1>
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.display_name }}</a></p>
+  <h1>Timeline — {{ case.display_name }}</h1>
   <p class="hint">
     Every event here is built only from verified facts you've already
     reviewed — never directly from raw document text or a machine

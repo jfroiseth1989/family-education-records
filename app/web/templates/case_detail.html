@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ case.label }} — FERChronos{% endblock %}
+{% block title %}{{ case.display_name }} — FERChronos{% endblock %}
 {% block content %}
   <p><a href="/cases">&larr; All students</a></p>
-  <h1>{{ case.label }} <span class="status-badge status-{{ case.status }}">{{ case.status }}</span></h1>
+  <h1>{{ case.display_name }} <span class="status-badge status-{{ case.status }}">{{ case.status }}</span></h1>
   {% if case.description %}<p class="case-description">{{ case.description }}</p>{% endif %}
   <p class="meta">Student #{{ case.case_id }} · added {{ case.created_at }} · <a href="/cases/{{ case.case_id }}/search">Search this student</a> · <a href="/cases/{{ case.case_id }}/notes-search">Search your notes</a> · <a href="/cases/{{ case.case_id }}/ocr-jobs">OCR jobs</a> · <a href="/cases/{{ case.case_id }}/facts">Facts &amp; Observations</a> · <a href="/cases/{{ case.case_id }}/timeline">Timeline</a></p>
 
@@ -25,6 +25,27 @@
           {% endfor %}
         </select>
       </label>
+      <fieldset>
+        <legend>Preferred display name (optional)</legend>
+        <p class="hint">
+          If you fill in all three, the student's name is shown throughout
+          the app as "Legal first (Preferred) Legal last" — for example,
+          "Isabella (Izzy) Froiseth." Leave these blank to just use the
+          student name above.
+        </p>
+        <label>
+          Legal first name
+          <input type="text" name="legal_first_name" maxlength="100" value="{{ case.legal_first_name or '' }}">
+        </label>
+        <label>
+          Preferred name / nickname
+          <input type="text" name="preferred_name" maxlength="100" value="{{ case.preferred_name or '' }}">
+        </label>
+        <label>
+          Legal last name
+          <input type="text" name="legal_last_name" maxlength="100" value="{{ case.legal_last_name or '' }}">
+        </label>
+      </fieldset>
       <button type="submit">Save changes</button>
     </form>
   </section>

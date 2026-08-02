@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ document.original_filename }} — FERChronos{% endblock %}
 {% block content %}
-  <p><a href="/cases/{{ document.case_id }}">&larr; {{ document.case.label }}</a></p>
+  <p><a href="/cases/{{ document.case_id }}">&larr; {{ document.case.display_name }}</a></p>
   <h1>
     {{ document.original_filename }}
     {% if document.version_group_id %}

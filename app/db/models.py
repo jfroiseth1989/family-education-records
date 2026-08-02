@@ -188,7 +188,15 @@ class DocumentDatePrecision(str, enum.Enum):
 
 
 class Case(Base):
-    """A single matter/dispute — the top-level container for its documents."""
+    """A single matter/dispute — the top-level container for its documents.
+
+    Doubles as the student-record boundary in the FERChronos UX refinement
+    (Step 2): `legal_first_name`/`legal_last_name`/`preferred_name` are
+    optional, nullable columns added additively on top of the original
+    Phase 1 schema — `label` is untouched and remains the required,
+    always-present field every existing/legacy row already has. See
+    `display_name` below for how the two are reconciled for display.
+    """
 
     __tablename__ = "cases"
 
@@ -202,12 +210,38 @@ class Case(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    # Optional student-name breakdown (FERChronos UX Step 2). All three are
+    # nullable and independent of `label` — filling them in never changes
+    # `label`, and leaving them blank (every case row created before this
+    # step, or any student where a family just wants a plain name) is fully
+    # supported. Stored as three separate fields, not one "legal_name"
+    # string, specifically so `display_name` can place the preferred name
+    # between the legal first and last name without parsing a free-text
+    # name apart.
+    legal_first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legal_last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    preferred_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     documents: Mapped[list["Document"]] = relationship(
         back_populates="case", cascade="all, delete-orphan"
     )
     version_groups: Mapped[list["DocumentVersionGroup"]] = relationship(
         back_populates="case", cascade="all, delete-orphan"
     )
+
+    @property
+    def display_name(self) -> str:
+        """The student's name as shown throughout the UI.
+
+        "LegalFirst (Preferred) LegalLast" — e.g. "Isabella (Izzy)
+        Froiseth" — only when all three optional name fields are set.
+        Otherwise falls back to `label`, which is always present. Never
+        renders a "legal:" prefix or label — the preferred name simply
+        sits in parentheses between the legal first and last name.
+        """
+        if self.legal_first_name and self.legal_last_name and self.preferred_name:
+            return f"{self.legal_first_name} ({self.preferred_name}) {self.legal_last_name}"
+        return self.label
 
 
 class DocumentType(Base):

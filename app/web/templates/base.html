@@ -9,6 +9,28 @@
 <body>
   <header class="app-header">
     <a class="app-title" href="/cases">FERChronos</a>
+    {% set active_student = case if case is defined else (document.case if document is defined else none) %}
+    <details class="student-selector">
+      <summary>
+        {% if active_student %}
+          Student: <strong>{{ active_student.display_name }}</strong>
+        {% else %}
+          Select a student
+        {% endif %}
+      </summary>
+      <ul class="student-selector-menu">
+        {% for student in all_students(request) %}
+          <li>
+            <a href="/cases/{{ student.case_id }}"{% if active_student and active_student.case_id == student.case_id %} class="active"{% endif %}>
+              {{ student.display_name }}
+            </a>
+          </li>
+        {% else %}
+          <li class="empty-state">No students yet.</li>
+        {% endfor %}
+        <li><a href="/cases#add-student" class="student-selector-add">+ Add Student</a></li>
+      </ul>
+    </details>
     <span class="app-subtitle">Private • Local-only • Your records stay on this device</span>
   </header>
   <main class="app-main">

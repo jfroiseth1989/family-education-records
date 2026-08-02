@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Facts & Observations — {{ case.label }} — FERChronos{% endblock %}
+{% block title %}Facts & Observations — {{ case.display_name }} — FERChronos{% endblock %}
 {% block content %}
-  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
-  <h1>Facts &amp; Observations — {{ case.label }}</h1>
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.display_name }}</a></p>
+  <h1>Facts &amp; Observations — {{ case.display_name }}</h1>
   <p class="hint">
     Verified facts are the only claims later phases (timeline, conflicts,
     binder) may ever read. A pending observation is a machine-suggested

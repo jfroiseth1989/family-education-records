@@ -3,7 +3,7 @@
 {% block content %}
   <h1>Students</h1>
 
-  <section class="panel">
+  <section class="panel" id="add-student">
     <h2>Add Student</h2>
     <form method="post" action="/cases">
       <label>
@@ -14,6 +14,27 @@
         Description
         <textarea name="description" rows="2"></textarea>
       </label>
+      <fieldset>
+        <legend>Preferred display name (optional)</legend>
+        <p class="hint">
+          If you fill in all three, the student's name is shown throughout
+          the app as "Legal first (Preferred) Legal last" — for example,
+          "Isabella (Izzy) Froiseth." Leave these blank to just use the
+          student name above.
+        </p>
+        <label>
+          Legal first name
+          <input type="text" name="legal_first_name" maxlength="100">
+        </label>
+        <label>
+          Preferred name / nickname
+          <input type="text" name="preferred_name" maxlength="100">
+        </label>
+        <label>
+          Legal last name
+          <input type="text" name="legal_last_name" maxlength="100">
+        </label>
+      </fieldset>
       <button type="submit">Add Student</button>
     </form>
   </section>
@@ -28,7 +49,7 @@
         <tbody>
           {% for case in cases %}
             <tr>
-              <td><a href="/cases/{{ case.case_id }}">{{ case.label }}</a></td>
+              <td><a href="/cases/{{ case.case_id }}">{{ case.display_name }}</a></td>
               <td><span class="status-badge status-{{ case.status }}">{{ case.status }}</span></td>
               <td>{{ case.created_at }}</td>
               <td>{{ case.documents | length }}</td>

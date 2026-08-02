@@ -39,6 +39,81 @@ body {
   opacity: 0.7;
 }
 
+/* Persistent student selector -- minimal styling only; the full palette
+   redesign is scheduled for UX refinement Step 5, not this step. */
+.student-selector {
+  position: relative;
+}
+
+.student-selector summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.student-selector summary::-webkit-details-marker {
+  display: none;
+}
+
+.student-selector summary::after {
+  content: " \25BE";
+}
+
+.student-selector-menu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  min-width: 220px;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: Canvas;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.student-selector-menu li {
+  margin: 0;
+}
+
+.student-selector-menu a {
+  display: block;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.student-selector-menu a:hover,
+.student-selector-menu a.active {
+  background: var(--panel-bg);
+}
+
+.student-selector-add {
+  margin-top: 0.2rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem !important;
+  color: var(--accent);
+}
+
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+}
+
+fieldset legend {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0 0.3rem;
+}
+
 .panel {
   border: 1px solid var(--border);
   border-radius: 8px;

@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Search notes in {{ case.label }} — FERChronos{% endblock %}
+{% block title %}Search notes in {{ case.display_name }} — FERChronos{% endblock %}
 {% block content %}
-  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
-  <h1>Search your notes &amp; bookmarks in {{ case.label }}</h1>
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.display_name }}</a></p>
+  <h1>Search your notes &amp; bookmarks in {{ case.display_name }}</h1>
   <p class="hint">
     This searches only the text of notes and bookmarks you've added — never
     the source documents themselves. For source document text, use

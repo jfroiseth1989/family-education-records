@@ -98,3 +98,120 @@ def test_edit_case_rejects_invalid_status(client: TestClient):
         data={"label": "Status Test", "description": "", "status": "not-a-real-status"},
     )
     assert response.status_code == 400
+
+
+def test_create_case_accepts_optional_name_fields(client: TestClient, app: FastAPI):
+    response = client.post(
+        "/cases",
+        data={
+            "label": "Isabella Froiseth",
+            "legal_first_name": "Isabella",
+            "legal_last_name": "Froiseth",
+            "preferred_name": "Izzy",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    case = _first_case(app)
+    assert case.legal_first_name == "Isabella"
+    assert case.legal_last_name == "Froiseth"
+    assert case.preferred_name == "Izzy"
+    assert case.display_name == "Isabella (Izzy) Froiseth"
+
+
+def test_create_case_without_name_fields_falls_back_to_label(client: TestClient, app: FastAPI):
+    """Every existing caller that only ever sent label/description (the
+    entire pre-Step-2 test suite) must keep working unchanged.
+    """
+    response = client.post("/cases", data={"label": "Zeke Froiseth"}, follow_redirects=False)
+    assert response.status_code == 303
+
+    case = _first_case(app)
+    assert case.legal_first_name is None
+    assert case.legal_last_name is None
+    assert case.preferred_name is None
+    assert case.display_name == "Zeke Froiseth"
+
+
+def test_edit_case_updates_name_fields(client: TestClient, app: FastAPI):
+    create_response = client.post(
+        "/cases", data={"label": "Name Edit Test"}, follow_redirects=False
+    )
+    case_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.post(
+        f"/cases/{case_id}/edit",
+        data={
+            "label": "Name Edit Test",
+            "description": "",
+            "status": "active",
+            "legal_first_name": "First",
+            "legal_last_name": "Last",
+            "preferred_name": "Nick",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        case = db.get(Case, int(case_id))
+        assert case.display_name == "First (Nick) Last"
+
+
+def test_case_list_shows_full_display_name_format(client: TestClient):
+    client.post(
+        "/cases",
+        data={
+            "label": "Isabella Froiseth",
+            "legal_first_name": "Isabella",
+            "legal_last_name": "Froiseth",
+            "preferred_name": "Izzy",
+        },
+    )
+    response = client.get("/cases")
+    assert "Isabella (Izzy) Froiseth" in response.text
+    assert "legal:" not in response.text.lower()
+
+
+def test_case_detail_heading_shows_full_display_name_format(client: TestClient):
+    create_response = client.post(
+        "/cases",
+        data={
+            "label": "Isabella Froiseth",
+            "legal_first_name": "Isabella",
+            "legal_last_name": "Froiseth",
+            "preferred_name": "Izzy",
+        },
+        follow_redirects=False,
+    )
+    response = client.get(create_response.headers["location"])
+    assert "Isabella (Izzy) Froiseth" in response.text
+
+
+def test_student_selector_present_on_case_scoped_page(client: TestClient):
+    create_response = client.post(
+        "/cases", data={"label": "Selector Test Student"}, follow_redirects=False
+    )
+    response = client.get(create_response.headers["location"])
+    assert "student-selector" in response.text
+    assert "+ Add Student" in response.text
+    assert "Selector Test Student" in response.text
+
+
+def test_student_selector_lists_all_students_and_highlights_active_one(client: TestClient):
+    first = client.post("/cases", data={"label": "First Student"}, follow_redirects=False)
+    second = client.post("/cases", data={"label": "Second Student"}, follow_redirects=False)
+
+    response = client.get(first.headers["location"])
+    assert "First Student" in response.text
+    assert "Second Student" in response.text  # both listed for switching
+
+    second_id = second.headers["location"].rsplit("/", 1)[-1]
+    assert f'href="/cases/{second_id}"' in response.text
+
+
+def test_student_selector_shows_no_active_student_on_list_page(client: TestClient):
+    client.post("/cases", data={"label": "Some Student"})
+    response = client.get("/cases")
+    assert "Select a student" in response.text

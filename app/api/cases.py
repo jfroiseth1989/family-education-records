@@ -42,15 +42,29 @@ def create_case(
     request: Request,
     label: str = Form(...),
     description: str = Form(""),
+    legal_first_name: str = Form(""),
+    legal_last_name: str = Form(""),
+    preferred_name: str = Form(""),
     db: Session = Depends(get_db),
     actor: str = Depends(get_actor),
 ) -> RedirectResponse:
-    """Create a new case and redirect to its detail page."""
+    """Create a new case and redirect to its detail page.
+
+    legal_first_name/legal_last_name/preferred_name are optional (see the
+    Case.display_name docstring) -- every existing caller that only sends
+    label/description keeps working unchanged.
+    """
     label = label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="Student name is required.")
 
-    case = Case(label=label, description=description.strip() or None)
+    case = Case(
+        label=label,
+        description=description.strip() or None,
+        legal_first_name=legal_first_name.strip() or None,
+        legal_last_name=legal_last_name.strip() or None,
+        preferred_name=preferred_name.strip() or None,
+    )
     db.add(case)
     db.flush()  # assigns case.case_id
 
@@ -97,10 +111,13 @@ def edit_case(
     label: str = Form(...),
     description: str = Form(""),
     status: str = Form(...),
+    legal_first_name: str = Form(""),
+    legal_last_name: str = Form(""),
+    preferred_name: str = Form(""),
     db: Session = Depends(get_db),
     actor: str = Depends(get_actor),
 ) -> RedirectResponse:
-    """Update a case's label, description, and status."""
+    """Update a case's label, description, status, and optional name fields."""
     case = _get_case_or_404(db, case_id)
 
     label = label.strip()
@@ -110,6 +127,10 @@ def edit_case(
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status '{status}'.")
 
+    legal_first_name = legal_first_name.strip() or None
+    legal_last_name = legal_last_name.strip() or None
+    preferred_name = preferred_name.strip() or None
+
     changes = {}
     if case.label != label:
         changes["label"] = {"old": case.label, "new": label}
@@ -117,10 +138,19 @@ def edit_case(
         changes["description"] = {"old": case.description, "new": description.strip() or None}
     if case.status != status:
         changes["status"] = {"old": case.status, "new": status}
+    if case.legal_first_name != legal_first_name:
+        changes["legal_first_name"] = {"old": case.legal_first_name, "new": legal_first_name}
+    if case.legal_last_name != legal_last_name:
+        changes["legal_last_name"] = {"old": case.legal_last_name, "new": legal_last_name}
+    if case.preferred_name != preferred_name:
+        changes["preferred_name"] = {"old": case.preferred_name, "new": preferred_name}
 
     case.label = label
     case.description = description.strip() or None
     case.status = status
+    case.legal_first_name = legal_first_name
+    case.legal_last_name = legal_last_name
+    case.preferred_name = preferred_name
 
     if changes:
         db.add(

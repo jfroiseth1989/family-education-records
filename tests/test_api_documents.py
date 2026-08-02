@@ -50,6 +50,19 @@ def test_document_detail_page_shows_hash_and_custody_log(client: TestClient):
     assert "imported" in response.text
 
 
+def test_document_detail_page_shows_student_selector_via_document_case(client: TestClient):
+    """document_detail.html only has `document` in its route context (no
+    `case`) -- the header selector must still resolve the active student
+    through `document.case`, not require every route to pass `case` too.
+    """
+    case_id = _create_case(client, label="Selector Via Document")
+    upload_response = _upload(client, case_id, "iep.txt", b"IEP content here")
+
+    response = client.get(upload_response.headers["location"])
+    assert "student-selector" in response.text
+    assert "Selector Via Document" in response.text
+
+
 def test_download_document_file_returns_original_bytes(client: TestClient):
     case_id = _create_case(client)
     content = b"exact original bytes"
