@@ -101,6 +101,10 @@
                     <textarea name="statement" rows="2" required>{{ h.citation.quoted_text }}</textarea>
                   </label>
                   <label>
+                    Date (only if fact type is "date")
+                    <input type="date" name="fact_date">
+                  </label>
+                  <label>
                     Confidence
                     <select name="confidence_label" required>
                       {% for label in confidence_labels %}

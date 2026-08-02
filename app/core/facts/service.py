@@ -25,6 +25,12 @@ citations spanning more than one document), so writes here are logged to
 `audit_log` -- the case-level ledger -- rather than fabricated onto any
 one cited document's `document_custody_events`; see
 docs/DATA_MODEL.md "audit_log" and app/api/cases.py for the precedent.
+
+Phase 4 Step 0 (docs/PHASE_4_IMPLEMENTATION_PLAN.md §1/§3) added
+`fact_date`/`observed_date`: a structured date, required if and only if
+`fact_type` is "date", so Phase 4's timeline can read a real date value
+instead of a human re-typing what's already in a fact's `statement`
+text.
 """
 
 from __future__ import annotations
@@ -97,13 +103,18 @@ def create_verified_fact(
     confidence_label: str,
     citation_ids: list[int],
     actor: str,
+    fact_date: datetime | None = None,
 ) -> VerifiedFact:
     """A human directly asserts a fact, citing one or more existing citations.
 
     No AI observation involved -- `source_observation_id` and
     `confidence_score` stay null; only `promote_observation()` ever sets
-    those. Raises ValueError for an empty statement, an invalid
-    confidence label, or invalid citations. Does not commit -- same
+    those. `fact_date` is required when `fact_type_name` is "date" (a
+    date-type fact with no date defeats the entire point of Phase 4
+    reading a structured date from here) and forbidden otherwise -- see
+    docs/PHASE_4_IMPLEMENTATION_PLAN.md §3 Step 0. Raises ValueError for
+    an empty statement, an invalid confidence label, a missing/
+    unexpected `fact_date`, or invalid citations. Does not commit -- same
     convention as every other core module.
     """
     stripped = statement.strip()
@@ -113,6 +124,10 @@ def create_verified_fact(
         raise ValueError(
             f"Invalid confidence label '{confidence_label}'; must be one of {sorted(CONFIDENCE_LABELS)}."
         )
+    if fact_type_name == "date" and fact_date is None:
+        raise ValueError("fact_date is required when fact_type is 'date'.")
+    if fact_type_name != "date" and fact_date is not None:
+        raise ValueError(f"fact_date is only valid when fact_type is 'date', not '{fact_type_name}'.")
     fact_type = _get_fact_type(db, fact_type_name)
     citations = _validated_citations(db, case, citation_ids)
 
@@ -121,6 +136,7 @@ def create_verified_fact(
         fact_type_id=fact_type.type_id,
         statement=stripped,
         confidence_label=confidence_label,
+        fact_date=fact_date,
         created_by=actor,
     )
     db.add(fact)
@@ -151,6 +167,7 @@ def create_ai_observation(
     method: str,
     citation_ids: list[int],
     actor: str,
+    observed_date: datetime | None = None,
 ) -> AiObservation:
     """Record a machine-suggested candidate fact as `pending_review`.
 
@@ -159,9 +176,14 @@ def create_ai_observation(
     can turn this into something later phases may read. `actor` is who/
     what produced this observation for the audit trail (e.g. "system
     (regex-date-parse-v1)") -- distinct from `method`, which is the
-    ai_observations column identifying the specific technique. Raises
+    ai_observations column identifying the specific technique.
+    `observed_date` is the real date a date-type observation source
+    (Step 3's date-parser) already computed internally -- same
+    required-iff-date rule as `create_verified_fact()`'s `fact_date`, so
+    a later promotion always has a structured date to carry forward. Raises
     ValueError for an empty statement, an out-of-range confidence score,
-    an empty method, or invalid citations. Does not commit.
+    an empty method, a missing/unexpected `observed_date`, or invalid
+    citations. Does not commit.
     """
     stripped = statement.strip()
     if not stripped:
@@ -171,6 +193,10 @@ def create_ai_observation(
     stripped_method = method.strip()
     if not stripped_method:
         raise ValueError("Method cannot be empty.")
+    if fact_type_name == "date" and observed_date is None:
+        raise ValueError("observed_date is required when fact_type is 'date'.")
+    if fact_type_name != "date" and observed_date is not None:
+        raise ValueError(f"observed_date is only valid when fact_type is 'date', not '{fact_type_name}'.")
     fact_type = _get_fact_type(db, fact_type_name)
     citations = _validated_citations(db, case, citation_ids)
 
@@ -180,6 +206,7 @@ def create_ai_observation(
         statement=stripped,
         confidence_score=confidence_score,
         method=stripped_method,
+        observed_date=observed_date,
         status=PENDING_REVIEW,
     )
     db.add(observation)
@@ -209,6 +236,7 @@ def promote_observation(
     confidence_label: str,
     actor: str,
     statement: str | None = None,
+    fact_date: datetime | None = None,
 ) -> VerifiedFact:
     """A human reviews a pending observation and accepts it.
 
@@ -220,9 +248,12 @@ def promote_observation(
     `observation.confidence_score` -- the two are different concepts
     (docs/DATA_MODEL.md "verified_facts"). `statement` optionally lets
     the reviewer correct the wording before confirming; defaults to the
-    observation's own statement unchanged. Raises ValueError if
-    `observation` isn't `pending_review` -- there is no re-promote or
-    re-reject path. Does not commit.
+    observation's own statement unchanged. `fact_date` works the same way
+    for the underlying date -- defaults to `observation.observed_date`,
+    overridable if the reviewer needs to correct it (docs/PHASE_4_
+    IMPLEMENTATION_PLAN.md §3 Step 0). Raises ValueError if `observation`
+    isn't `pending_review` -- there is no re-promote or re-reject path.
+    Does not commit.
     """
     if observation.status != PENDING_REVIEW:
         raise ValueError(
@@ -237,12 +268,19 @@ def promote_observation(
     if not final_statement:
         raise ValueError("Statement cannot be empty.")
 
+    final_fact_date = fact_date if fact_date is not None else observation.observed_date
+    if observation.fact_type.name == "date" and final_fact_date is None:
+        raise ValueError("fact_date is required when promoting a 'date' observation.")
+    if observation.fact_type.name != "date" and final_fact_date is not None:
+        raise ValueError(f"fact_date is only valid for 'date' observations, not '{observation.fact_type.name}'.")
+
     fact = VerifiedFact(
         case_id=observation.case_id,
         fact_type_id=observation.fact_type_id,
         statement=final_statement,
         confidence_label=confidence_label,
         confidence_score=observation.confidence_score,
+        fact_date=final_fact_date,
         source_observation_id=observation.observation_id,
         created_by=actor,
     )

@@ -17,13 +17,18 @@ MM/DD/YYYY assuming US convention), each with a fixed confidence score
 tied to how unambiguous that pattern is -- never a computed/learned
 score. A 2-digit year is intentionally never matched; assuming a century
 would be a guess, not a deterministic read of what's on the page.
+
+Each match's parsed `date` is passed through as `observed_date` (Phase 4
+Step 0) so a later promotion of the observation carries a real,
+structured date into `verified_facts.fact_date` -- not just the
+formatted string in `statement`.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -204,6 +209,7 @@ def extract_date_observations(db: Session, case: Case, document: Document, actor
                 method=METHOD,
                 citation_ids=[citation.citation_id],
                 actor=actor,
+                observed_date=datetime.combine(dm.parsed_date, time.min, tzinfo=timezone.utc),
             )
             created.append(observation)
 

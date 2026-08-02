@@ -15,10 +15,14 @@ ocr_word_boxes`, and `ocr_text_history` — OCR execution core, Step 1;
 schema) plus Phase 3.5 Step 1 (`fact_types`, `ai_observations`,
 `ai_observation_citations`, `verified_facts`, `verified_fact_citations`,
 `ai_summaries`, `summary_source_documents` — the Fact, Observation &
-Summary Layer, see docs/ARCHITECTURE.md §3.7). See
+Summary Layer, see docs/ARCHITECTURE.md §3.7) plus Phase 4 Step 0
+(`ai_observations.observed_date`, `verified_facts.fact_date` — structured
+dates the timeline reads from, added so Phase 4 never requires a human
+to re-enter a date already captured in a verified fact; see
+docs/PHASE_4_IMPLEMENTATION_PLAN.md §1/§3). See
 docs/PHASE_3_IMPLEMENTATION_PLAN.md for the full Phase 3 schema and step
-breakdown. Tables for later phases (the timeline, relationship graph,
-etc.) are intentionally not created yet.
+breakdown. Tables for the timeline itself (Phase 4 Steps 1-3) and later
+phases (relationship graph, etc.) are intentionally not created yet.
 docs/DATA_MODEL.md is the authoritative full target schema; each later
 phase's migration builds toward it incrementally, which is exactly what
 the lookup-table / EAV-metadata extensibility design in that document is
@@ -802,6 +806,15 @@ class AiObservation(Base):
     statement: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     method: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Set only when fact_type is "date" -- the real date the deterministic
+    # date-parser (app/core/facts/date_extraction.py) computed internally
+    # before formatting it into `statement` text. Added in Phase 4 Step 0
+    # so a promoted date fact can carry a structured date forward to
+    # verified_facts.fact_date instead of a human re-typing it -- see
+    # docs/PHASE_4_IMPLEMENTATION_PLAN.md §3 Step 0. Null for any other
+    # fact type, or if a future non-date observation source doesn't have
+    # a date to give.
+    observed_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # pending_review / accepted / rejected
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending_review", server_default="pending_review"
@@ -871,6 +884,13 @@ class VerifiedFact(Base):
     # informed by) a scored ai_observations row -- null for a fact a human
     # asserted directly with no machine suggestion behind it.
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Non-null if and only if fact_type is "date" -- enforced by
+    # app/core/facts/service.py, not a DB constraint (same style as every
+    # other validation in this layer). This is the single source of
+    # truth Phase 4's timeline reads an event's date from -- never
+    # re-derived from `statement` text, never re-entered by a human a
+    # second time. See docs/PHASE_4_IMPLEMENTATION_PLAN.md §1 decision 1.
+    fact_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_observation_id: Mapped[int | None] = mapped_column(
         ForeignKey("ai_observations.observation_id"), nullable=True
     )

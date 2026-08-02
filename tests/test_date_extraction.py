@@ -8,7 +8,7 @@ and the end-to-end `extract_date_observations()` against real DB rows.
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -152,6 +152,7 @@ def test_extract_creates_observation_with_citation(db_session: Session, sample_c
     assert observation.statement == "Possible date: 2024-03-12"
     assert observation.method == METHOD
     assert observation.status == "pending_review"
+    assert observation.observed_date == datetime(2024, 3, 12, tzinfo=timezone.utc)
 
     link = db_session.scalars(
         select(AiObservationCitation).where(AiObservationCitation.observation_id == observation.observation_id)

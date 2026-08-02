@@ -16,13 +16,14 @@
     {% if pending_observations %}
       <table class="data-table">
         <thead>
-          <tr><th>Statement</th><th>Type</th><th>Confidence</th><th>Method</th><th>Cited from</th><th>Review</th></tr>
+          <tr><th>Statement</th><th>Type</th><th>Date</th><th>Confidence</th><th>Method</th><th>Cited from</th><th>Review</th></tr>
         </thead>
         <tbody>
           {% for obs in pending_observations %}
             <tr>
               <td>{{ obs.statement }}</td>
               <td>{{ obs.fact_type.name }}</td>
+              <td>{{ obs.observed_date.strftime("%Y-%m-%d") if obs.observed_date else "—" }}</td>
               <td>{{ "%.2f"|format(obs.confidence_score) }}</td>
               <td>{{ obs.method }}</td>
               <td>
@@ -46,6 +47,12 @@
                       Statement (edit if needed)
                       <textarea name="statement" rows="2">{{ obs.statement }}</textarea>
                     </label>
+                    {% if obs.observed_date %}
+                      <label>
+                        Date (edit to correct, otherwise the observed date above is used)
+                        <input type="date" name="fact_date" value="{{ obs.observed_date.strftime('%Y-%m-%d') }}">
+                      </label>
+                    {% endif %}
                     <button type="submit">Promote to verified fact</button>
                   </form>
                 </details>
@@ -74,13 +81,14 @@
     {% if verified_facts %}
       <table class="data-table">
         <thead>
-          <tr><th>Statement</th><th>Type</th><th>Confidence</th><th>Source</th><th>Cited from</th><th>Created</th></tr>
+          <tr><th>Statement</th><th>Type</th><th>Date</th><th>Confidence</th><th>Source</th><th>Cited from</th><th>Created</th></tr>
         </thead>
         <tbody>
           {% for fact in verified_facts %}
             <tr>
               <td>{{ fact.statement }}</td>
               <td>{{ fact.fact_type.name }}</td>
+              <td>{{ fact.fact_date.strftime("%Y-%m-%d") if fact.fact_date else "—" }}</td>
               <td>{{ fact.confidence_label }}{% if fact.confidence_score is not none %} ({{ "%.2f"|format(fact.confidence_score) }}){% endif %}</td>
               <td>{% if fact.source_observation_id %}promoted from observation{% else %}direct{% endif %}</td>
               <td>

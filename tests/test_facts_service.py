@@ -7,6 +7,7 @@ Summary Layer".
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -71,7 +72,7 @@ def test_create_verified_fact_succeeds(db_session: Session, sample_case: Case):
     citation = _citation(db_session, document)
 
     fact = create_verified_fact(
-        db_session, sample_case, "date", "IEP annual review meeting held",
+        db_session, sample_case, "category", "IEP annual review meeting held",
         "certain", [citation.citation_id], actor="test-user",
     )
     db_session.commit()
@@ -100,7 +101,7 @@ def test_create_verified_fact_rejects_empty_statement(db_session: Session, sampl
     citation = _citation(db_session, document)
 
     with pytest.raises(ValueError, match="cannot be empty"):
-        create_verified_fact(db_session, sample_case, "date", "   ", "certain", [citation.citation_id], actor="test-user")
+        create_verified_fact(db_session, sample_case, "category", "   ", "certain", [citation.citation_id], actor="test-user")
 
 
 def test_create_verified_fact_rejects_invalid_confidence_label(db_session: Session, sample_case: Case):
@@ -109,19 +110,19 @@ def test_create_verified_fact_rejects_invalid_confidence_label(db_session: Sessi
 
     with pytest.raises(ValueError, match="Invalid confidence label"):
         create_verified_fact(
-            db_session, sample_case, "date", "A statement", "very sure",
+            db_session, sample_case, "category", "A statement", "very sure",
             [citation.citation_id], actor="test-user",
         )
 
 
 def test_create_verified_fact_rejects_empty_citation_list(db_session: Session, sample_case: Case):
     with pytest.raises(ValueError, match="At least one citation"):
-        create_verified_fact(db_session, sample_case, "date", "A statement", "certain", [], actor="test-user")
+        create_verified_fact(db_session, sample_case, "category", "A statement", "certain", [], actor="test-user")
 
 
 def test_create_verified_fact_rejects_nonexistent_citation(db_session: Session, sample_case: Case):
     with pytest.raises(ValueError, match="not found"):
-        create_verified_fact(db_session, sample_case, "date", "A statement", "certain", [99999], actor="test-user")
+        create_verified_fact(db_session, sample_case, "category", "A statement", "certain", [99999], actor="test-user")
 
 
 def test_create_verified_fact_rejects_citation_from_another_case(db_session: Session, sample_case: Case):
@@ -133,7 +134,7 @@ def test_create_verified_fact_rejects_citation_from_another_case(db_session: Ses
 
     with pytest.raises(ValueError, match="different case"):
         create_verified_fact(
-            db_session, sample_case, "date", "A statement", "certain",
+            db_session, sample_case, "category", "A statement", "certain",
             [other_citation.citation_id], actor="test-user",
         )
 
@@ -155,7 +156,7 @@ def test_create_verified_fact_accepts_multiple_citations(db_session: Session, sa
     citation_b = _citation(db_session, document, "Second excerpt")
 
     fact = create_verified_fact(
-        db_session, sample_case, "date", "A statement", "certain",
+        db_session, sample_case, "category", "A statement", "certain",
         [citation_a.citation_id, citation_b.citation_id], actor="test-user",
     )
     db_session.commit()
@@ -174,7 +175,7 @@ def test_create_ai_observation_succeeds(db_session: Session, sample_case: Case):
     citation = _citation(db_session, document)
 
     observation = create_ai_observation(
-        db_session, sample_case, "date", "Possible meeting date: 2024-03-12",
+        db_session, sample_case, "category", "Possible meeting date: 2024-03-12",
         0.8, "regex-date-parse-v1", [citation.citation_id], actor="system (date-parser)",
     )
     db_session.commit()
@@ -203,7 +204,7 @@ def test_create_ai_observation_rejects_out_of_range_confidence(db_session: Sessi
 
     with pytest.raises(ValueError, match="between 0.0 and 1.0"):
         create_ai_observation(
-            db_session, sample_case, "date", "A statement", 1.5, "method-v1",
+            db_session, sample_case, "category", "A statement", 1.5, "method-v1",
             [citation.citation_id], actor="system",
         )
 
@@ -214,14 +215,14 @@ def test_create_ai_observation_rejects_empty_method(db_session: Session, sample_
 
     with pytest.raises(ValueError, match="Method cannot be empty"):
         create_ai_observation(
-            db_session, sample_case, "date", "A statement", 0.5, "   ",
+            db_session, sample_case, "category", "A statement", 0.5, "   ",
             [citation.citation_id], actor="system",
         )
 
 
 def test_create_ai_observation_rejects_empty_citation_list(db_session: Session, sample_case: Case):
     with pytest.raises(ValueError, match="At least one citation"):
-        create_ai_observation(db_session, sample_case, "date", "A statement", 0.5, "method-v1", [], actor="system")
+        create_ai_observation(db_session, sample_case, "category", "A statement", 0.5, "method-v1", [], actor="system")
 
 
 # --- promote_observation -----------------------------------------------
@@ -231,7 +232,7 @@ def _pending_observation(db: Session, case: Case, confidence_score: float = 0.8)
     document = _document(db, case)
     citation = _citation(db, document)
     return create_ai_observation(
-        db, case, "date", "Possible meeting date: 2024-03-12", confidence_score,
+        db, case, "category", "Possible meeting date: 2024-03-12", confidence_score,
         "regex-date-parse-v1", [citation.citation_id], actor="system (date-parser)",
     )
 
@@ -389,7 +390,7 @@ def test_list_verified_facts_excludes_soft_deleted(db_session: Session, sample_c
     document = _document(db_session, sample_case)
     citation = _citation(db_session, document)
     fact = create_verified_fact(
-        db_session, sample_case, "date", "A statement", "certain", [citation.citation_id], actor="test-user",
+        db_session, sample_case, "category", "A statement", "certain", [citation.citation_id], actor="test-user",
     )
     db_session.commit()
 
@@ -401,3 +402,134 @@ def test_list_verified_facts_excludes_soft_deleted(db_session: Session, sample_c
 
     results = list_verified_facts(db_session, sample_case.case_id)
     assert results == []
+
+
+# --- fact_date / observed_date (Phase 4 Step 0) -----------------------
+
+
+_MARCH_12 = datetime(2024, 3, 12, tzinfo=timezone.utc)
+_APRIL_1 = datetime(2024, 4, 1, tzinfo=timezone.utc)
+
+
+def test_create_verified_fact_stores_fact_date_for_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    fact = create_verified_fact(
+        db_session, sample_case, "date", "IEP meeting held", "certain",
+        [citation.citation_id], actor="test-user", fact_date=_MARCH_12,
+    )
+    db_session.commit()
+
+    stored = db_session.get(VerifiedFact, fact.fact_id)
+    assert stored.fact_date == _MARCH_12
+
+
+def test_create_verified_fact_requires_fact_date_for_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    with pytest.raises(ValueError, match="fact_date is required"):
+        create_verified_fact(
+            db_session, sample_case, "date", "IEP meeting held", "certain",
+            [citation.citation_id], actor="test-user",
+        )
+
+
+def test_create_verified_fact_rejects_fact_date_for_non_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    with pytest.raises(ValueError, match="only valid when fact_type is 'date'"):
+        create_verified_fact(
+            db_session, sample_case, "category", "Something categorical", "certain",
+            [citation.citation_id], actor="test-user", fact_date=_MARCH_12,
+        )
+
+
+def test_create_ai_observation_stores_observed_date_for_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    observation = create_ai_observation(
+        db_session, sample_case, "date", "Possible date: 2024-03-12", 0.8,
+        "regex-date-parse-v1", [citation.citation_id], actor="system",
+        observed_date=_MARCH_12,
+    )
+    db_session.commit()
+
+    stored = db_session.get(AiObservation, observation.observation_id)
+    assert stored.observed_date == _MARCH_12
+
+
+def test_create_ai_observation_requires_observed_date_for_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    with pytest.raises(ValueError, match="observed_date is required"):
+        create_ai_observation(
+            db_session, sample_case, "date", "Possible date: 2024-03-12", 0.8,
+            "regex-date-parse-v1", [citation.citation_id], actor="system",
+        )
+
+
+def test_create_ai_observation_rejects_observed_date_for_non_date_type(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+
+    with pytest.raises(ValueError, match="only valid when fact_type is 'date'"):
+        create_ai_observation(
+            db_session, sample_case, "category", "Something categorical", 0.8,
+            "method-v1", [citation.citation_id], actor="system", observed_date=_MARCH_12,
+        )
+
+
+def _pending_date_observation(db: Session, case: Case, observed_date: datetime = _MARCH_12) -> AiObservation:
+    document = _document(db, case)
+    citation = _citation(db, document)
+    return create_ai_observation(
+        db, case, "date", f"Possible date: {observed_date.date().isoformat()}", 0.8,
+        "regex-date-parse-v1", [citation.citation_id], actor="system (date-parser)",
+        observed_date=observed_date,
+    )
+
+
+def test_promote_observation_carries_observed_date_into_fact_date(db_session: Session, sample_case: Case):
+    observation = _pending_date_observation(db_session, sample_case)
+    db_session.commit()
+
+    fact = promote_observation(db_session, observation, "probable", actor="reviewer")
+    db_session.commit()
+
+    assert fact.fact_date == _MARCH_12
+
+
+def test_promote_observation_allows_fact_date_override(db_session: Session, sample_case: Case):
+    observation = _pending_date_observation(db_session, sample_case)
+    db_session.commit()
+
+    fact = promote_observation(
+        db_session, observation, "certain", actor="reviewer", fact_date=_APRIL_1,
+    )
+    db_session.commit()
+
+    assert fact.fact_date == _APRIL_1
+    # The override never retroactively changes the observation's own
+    # recorded date.
+    reloaded = db_session.get(AiObservation, observation.observation_id)
+    assert reloaded.observed_date == _MARCH_12
+
+
+def test_promote_non_date_observation_has_no_fact_date(db_session: Session, sample_case: Case):
+    document = _document(db_session, sample_case)
+    citation = _citation(db_session, document)
+    observation = create_ai_observation(
+        db_session, sample_case, "category", "Something categorical", 0.7,
+        "method-v1", [citation.citation_id], actor="system",
+    )
+    db_session.commit()
+
+    fact = promote_observation(db_session, observation, "probable", actor="reviewer")
+    db_session.commit()
+
+    assert fact.fact_date is None

@@ -10,6 +10,8 @@ human citing a document directly needs no machine suggestion in between.
 
 from __future__ import annotations
 
+from datetime import date, datetime, time, timezone
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
@@ -27,6 +29,16 @@ from app.core.facts.service import (
 from app.db.models import AiObservation, AuditLog, Case, Citation, Document
 
 router = APIRouter(tags=["facts"])
+
+
+def _parse_form_date(value: str) -> datetime | None:
+    """An HTML `<input type="date">` submits "" when left blank or "YYYY-MM-DD"
+    when filled in -- normalizes both into what the core module expects.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return datetime.combine(date.fromisoformat(stripped), time.min, tzinfo=timezone.utc)
 
 
 def _get_document_or_404(db: Session, document_id: int) -> Document:
@@ -114,16 +126,24 @@ def promote_case_observation(
     observation_id: int,
     confidence_label: str = Form(...),
     statement: str = Form(""),
+    fact_date: str = Form(""),
     db: Session = Depends(get_db),
     actor: str = Depends(get_actor),
 ) -> RedirectResponse:
-    """A human reviews a pending observation and accepts it as a verified fact."""
+    """A human reviews a pending observation and accepts it as a verified fact.
+
+    `fact_date` defaults to blank in the form -- promote_observation()
+    then falls back to the observation's own `observed_date`, so a
+    reviewer only needs to fill it in to *correct* a date, never to
+    duplicate one already captured.
+    """
     observation = _get_observation_or_404(db, case_id, observation_id)
 
     try:
         promote_observation(
             db, observation, confidence_label, actor=actor,
             statement=statement.strip() or None,
+            fact_date=_parse_form_date(fact_date),
         )
     except ValueError as exc:
         db.rollback()
@@ -161,6 +181,7 @@ def create_fact_from_citation(
     fact_type: str = Form(...),
     statement: str = Form(...),
     confidence_label: str = Form(...),
+    fact_date: str = Form(""),
     page: int = Form(1),
     db: Session = Depends(get_db),
     actor: str = Depends(get_actor),
@@ -169,7 +190,8 @@ def create_fact_from_citation(
 
     No observation involved -- this is the "assert directly" path
     (docs/ARCHITECTURE.md §3.7), reachable from the document viewer next
-    to the citation it's asserted from.
+    to the citation it's asserted from. `fact_date` is only meaningful
+    (and required by create_verified_fact()) when `fact_type` is "date".
     """
     document = _get_document_or_404(db, document_id)
     citation = _get_citation_or_404(db, citation_id)
@@ -180,6 +202,7 @@ def create_fact_from_citation(
         create_verified_fact(
             db, document.case, fact_type, statement, confidence_label,
             [citation_id], actor=actor,
+            fact_date=_parse_form_date(fact_date),
         )
     except ValueError as exc:
         db.rollback()

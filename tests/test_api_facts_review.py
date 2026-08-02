@@ -4,6 +4,8 @@ promote/reject observation routes, and the create-from-citation route.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -91,6 +93,44 @@ def test_promote_observation_wrong_case_returns_404(client: TestClient, app: Fas
         follow_redirects=False,
     )
     assert response.status_code == 404
+
+
+def test_promote_observation_carries_forward_observed_date(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    _upload_and_scan(client, case_id)
+
+    with app.state.session_factory() as db:
+        observation_id = db.scalars(select(AiObservation)).one().observation_id
+
+    client.post(
+        f"/cases/{case_id}/facts/observations/{observation_id}/promote",
+        data={"confidence_label": "probable"},
+        follow_redirects=False,
+    )
+
+    with app.state.session_factory() as db:
+        fact = db.scalars(select(VerifiedFact)).one()
+        # SQLite drops tzinfo on round-trip through a fresh session --
+        # comparing naive is what a real re-read actually returns.
+        assert fact.fact_date == datetime(2024, 3, 12)
+
+
+def test_promote_observation_with_fact_date_override(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    _upload_and_scan(client, case_id)
+
+    with app.state.session_factory() as db:
+        observation_id = db.scalars(select(AiObservation)).one().observation_id
+
+    client.post(
+        f"/cases/{case_id}/facts/observations/{observation_id}/promote",
+        data={"confidence_label": "certain", "fact_date": "2024-04-01"},
+        follow_redirects=False,
+    )
+
+    with app.state.session_factory() as db:
+        fact = db.scalars(select(VerifiedFact)).one()
+        assert fact.fact_date == datetime(2024, 4, 1)
 
 
 def test_promote_observation_invalid_confidence_label_returns_400(client: TestClient, app: FastAPI):
@@ -195,6 +235,91 @@ def test_create_fact_from_citation(client: TestClient, app: FastAPI):
         fact = db.scalars(select(VerifiedFact)).one()
         assert fact.statement == "This document mentions something notable."
         assert fact.source_observation_id is None
+
+
+def test_create_fact_from_citation_date_type_requires_fact_date(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    response = client.post(
+        f"/cases/{case_id}/documents",
+        files={"file": ("letter.txt", b"Some page content to highlight for a fact.", "text/plain")},
+        follow_redirects=False,
+    )
+    document_id = int(response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        from app.db.models import DocumentPage
+
+        page_id = db.scalars(select(DocumentPage).where(DocumentPage.document_id == document_id)).one().page_id
+
+    client.post(
+        f"/documents/{document_id}/annotations/highlight",
+        data={"page_id": page_id, "start_offset": 0, "end_offset": 4},
+        follow_redirects=False,
+    )
+
+    with app.state.session_factory() as db:
+        from app.db.models import Citation
+
+        citation_id = db.scalars(select(Citation)).one().citation_id
+
+    response = client.post(
+        f"/documents/{document_id}/facts/create-from-citation",
+        data={
+            "citation_id": citation_id,
+            "fact_type": "date",
+            "statement": "IEP meeting held",
+            "confidence_label": "certain",
+            "page": 1,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_create_fact_from_citation_date_type_with_fact_date_succeeds(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    response = client.post(
+        f"/cases/{case_id}/documents",
+        files={"file": ("letter.txt", b"Some page content to highlight for a fact.", "text/plain")},
+        follow_redirects=False,
+    )
+    document_id = int(response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        from app.db.models import DocumentPage
+
+        page_id = db.scalars(select(DocumentPage).where(DocumentPage.document_id == document_id)).one().page_id
+
+    client.post(
+        f"/documents/{document_id}/annotations/highlight",
+        data={"page_id": page_id, "start_offset": 0, "end_offset": 4},
+        follow_redirects=False,
+    )
+
+    with app.state.session_factory() as db:
+        from app.db.models import Citation
+
+        citation_id = db.scalars(select(Citation)).one().citation_id
+
+    response = client.post(
+        f"/documents/{document_id}/facts/create-from-citation",
+        data={
+            "citation_id": citation_id,
+            "fact_type": "date",
+            "statement": "IEP meeting held March 12, 2024",
+            "confidence_label": "certain",
+            "fact_date": "2024-03-12",
+            "page": 1,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        fact = db.scalars(select(VerifiedFact)).one()
+        # SQLite drops tzinfo on round-trip through a fresh session --
+        # comparing naive is what a real re-read actually returns.
+        assert fact.fact_date == datetime(2024, 3, 12)
 
 
 def test_create_fact_from_citation_wrong_document_returns_400(client: TestClient, app: FastAPI):
