@@ -105,6 +105,15 @@ before implementation began:
                                   (Phase 4 Step 1); no core module or UI
                                   exists yet — see the TimelineEvent
                                   docstring.
+  - `app_auth`                  — the single owner's authentication state
+                                  (Security Phase Step 1, see
+                                  app/core/auth/passwords.py). A
+                                  singleton table: zero rows before
+                                  first-run setup, one row after.
+  - `app_sessions`               — active login sessions (Security Phase
+                                  Step 1). Deliberately not append-only,
+                                  unlike every other table here -- see the
+                                  AppSession docstring for why.
 """
 
 from __future__ import annotations
@@ -1160,3 +1169,85 @@ class TimelineEventFact(Base):
         ForeignKey("verified_facts.fact_id"), primary_key=True
     )
     is_date_source: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class AppAuth(Base):
+    """The single owner's authentication state (Security Phase Step 1).
+
+    A singleton table -- FERChronos has exactly one local owner, never a
+    multi-user login system (see docs/PRIVACY_SECURITY.md §6), so this
+    table has zero rows before first-run setup and exactly one row
+    afterward. "Has any row?" is how the app detects first launch (Step
+    2, not built yet) -- there is deliberately no separate "is_configured"
+    flag to keep out of sync with reality.
+
+    `password_hash`/`recovery_key_hash` are Argon2id-encoded hash strings
+    from app/core/auth/passwords.py -- never the plaintext password or
+    recovery key, which this application never stores or logs anywhere.
+    `recovery_key_hash` is nullable at the schema level even though the
+    setup flow (Step 5, not built yet) is expected to always set it in
+    the same transaction as `password_hash` -- see that step's plan.
+
+    `failed_login_attempts`/`locked_until` back the local login rate
+    limiter (Step 4, not built yet): incremented on each failed attempt,
+    reset to 0 on success, `locked_until` set to an escalating future
+    timestamp after repeated failures.
+
+    `inactivity_lock_minutes`/`session_absolute_expiry_hours` are the
+    owner-configurable session-lifetime defaults (approved: 15 minutes /
+    12 hours) -- kept on this singleton row rather than a separate
+    settings table since there is only ever one row to hold them.
+    """
+
+    __tablename__ = "app_auth"
+
+    auth_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    recovery_key_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    inactivity_lock_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    session_absolute_expiry_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=12)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    password_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    recovery_key_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class AppSession(Base):
+    """One active login session (Security Phase Step 1).
+
+    Server-side session state, not a signed client-side cookie -- the
+    cookie holds only this row's opaque `session_id`
+    (`secrets.token_urlsafe`, minted solely at successful login, never
+    reused from a pre-auth visitor, which is what rules out session
+    fixation by construction). A request is authenticated iff its cookie
+    names a row here with `last_activity_at` within
+    `AppAuth.inactivity_lock_minutes` and `expires_at` still in the
+    future (enforcement middleware, Step 3, not built yet).
+
+    Deliberately **not** append-only, unlike every evidence-bearing table
+    in this application: a session row is ephemeral security state, not
+    an educational record, so logout/manual lock/expiry hard-delete the
+    row rather than soft-deleting it (see docs/DATA_MODEL.md and
+    docs/PRIVACY_SECURITY.md for why every other table in this schema
+    preserves history instead). This is a deliberate, approved exception,
+    not an oversight -- do not change other tables to match this one.
+    """
+
+    __tablename__ = "app_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
