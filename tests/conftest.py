@@ -83,5 +83,43 @@ def app(settings: Settings):
 
 
 @pytest.fixture
-def client(app) -> TestClient:
+def anonymous_client(app) -> TestClient:
+    """A TestClient with no account set up and no session -- the state a
+    real first-time visitor (or Security Phase Step 3's enforcement
+    middleware, for any request outside /auth/* and /static/*) sees.
+
+    Named `anonymous_client` (rather than `client`) so it's opt-in: tests
+    that specifically exercise pre-setup/pre-login/logged-out behavior ask
+    for this fixture by name, while the default `client` fixture below is
+    pre-authenticated so the ~550 feature tests written before Step 3's
+    enforcement middleware existed don't all need to perform their own
+    login dance.
+    """
     return TestClient(app)
+
+
+TEST_OWNER_PASSWORD = "owner-password-123"
+
+
+@pytest.fixture
+def client(anonymous_client: TestClient) -> TestClient:
+    """A TestClient that has already completed first-run setup (which also
+    logs it in) via a real HTTP round-trip -- not a bypass. This is what
+    lets Step 3's deny-by-default enforcement middleware actually run in
+    front of every feature test while leaving those tests themselves
+    unchanged: they get a client that legitimately holds a valid session
+    cookie, the same way a real browser would after visiting /auth/setup.
+    """
+    csrf_response = anonymous_client.get("/auth/setup")
+    csrf_token = anonymous_client.cookies.get("csrf_token") or csrf_response.cookies.get("csrf_token")
+    setup_response = anonymous_client.post(
+        "/auth/setup",
+        data={
+            "password": TEST_OWNER_PASSWORD,
+            "confirm_password": TEST_OWNER_PASSWORD,
+            "csrf_token": csrf_token,
+        },
+        follow_redirects=False,
+    )
+    assert setup_response.status_code == 303, setup_response.text
+    return anonymous_client

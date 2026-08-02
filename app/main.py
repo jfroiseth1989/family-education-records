@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.api import annotations, auth, cases, documents, facts, ocr, search, tags, timeline
 from app.config import Settings, get_settings
+from app.core.auth.enforcement import AuthEnforcementMiddleware
 from app.core.auth.session import get_current_session
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
@@ -97,6 +98,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.vault = vault
     app.state.session_factory = session_factory
     app.state.settings = settings
+
+    app.add_middleware(AuthEnforcementMiddleware)
 
     if settings.enable_background_worker:
         # A single background worker thread, started once per app
