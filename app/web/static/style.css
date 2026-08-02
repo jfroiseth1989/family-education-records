@@ -383,6 +383,31 @@ button:focus-visible {
   color: var(--text);
 }
 
+/* Document type field on the document detail page (FERChronos Step
+   5.6) -- always editable, plus a local type-suggestion callout. */
+.inline-type-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.inline-type-form select {
+  width: auto;
+  max-width: 280px;
+  margin-top: 0;
+}
+
+.inline-type-form button {
+  padding: 0.4rem 0.9rem;
+}
+
+.suggestion-hint {
+  margin: 0.6rem 0 0.4rem;
+  max-width: 480px;
+}
+
 .upload-for strong {
   color: var(--teal);
 }

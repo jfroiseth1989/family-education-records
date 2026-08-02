@@ -23,6 +23,25 @@ DEFAULT_DOCUMENT_TYPES: list[tuple[str, str]] = [
     ("Medical", "Medical or health-related records"),
     ("Legal Filing", "Legal filings, due process documents, or related correspondence"),
     ("Audio Transcript", "Transcript of an audio or video recording"),
+    # Added in FERChronos Step 5.6 -- see docs/DATA_MODEL.md "Extensibility"
+    # and app/core/document_type_suggestion.py, whose trigger phrases match
+    # these names exactly.
+    ("Transportation Plan", "A student's transportation accommodations or arrangements"),
+    ("Functional Behavioral Assessment (FBA)", "An assessment of the function behind a behavior"),
+    ("Behavior Intervention Plan (BIP)", "A plan addressing a specific behavior"),
+    ("Report Card", "A grading-period report card"),
+    ("Mediation", "Mediation agreements, requests, or session records"),
+    ("Prior Written Notice", "Prior written notice of a proposed or refused action"),
+    ("Meeting Notice", "Notice of an upcoming IEP, 504, or other meeting"),
+    ("Consent Form", "A parental consent or authorization form"),
+    ("Progress Report", "A periodic progress report on IEP/504 goals"),
+    ("Service Log", "A log of related services delivered (e.g. speech, OT, PT)"),
+    ("Therapy Record", "Notes or records from a therapy session"),
+    ("Manifestation Determination", "A manifestation determination review record"),
+    ("Restraint/Seclusion Record", "A record of a restraint or seclusion incident"),
+    ("State Complaint", "A state-level special education complaint"),
+    ("OCR Complaint", "An Office for Civil Rights complaint"),
+    ("Due Process", "A due process complaint, hearing request, or related record"),
     ("Other", "Anything that doesn't fit another category"),
 ]
 

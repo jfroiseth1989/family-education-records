@@ -4,11 +4,14 @@ version-linking routes, via the FastAPI TestClient.
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db.models import Document, DocumentCustodyEvent
+from app.db.models import Document, DocumentCustodyEvent, DocumentType
 
 
 def _create_case(client: TestClient, label: str = "Doc Test Case") -> int:
@@ -510,3 +513,225 @@ def test_case_upload_form_shows_date_received_field_and_helper_text(client: Test
         "signed, or applies"
         in normalized
     )
+
+
+# --- FERChronos Step 5.6: document categories + local type suggestions ---
+
+
+def _type_id(app: FastAPI, name: str) -> int:
+    with app.state.session_factory() as db:
+        return db.scalars(select(DocumentType.type_id).where(DocumentType.name == name)).one()
+
+
+def test_document_detail_shows_filename_based_suggestion(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client, case_id, "transportation-plan-2024.txt", b"Nothing distinguishing in the body."
+    )
+    detail_url = upload_response.headers["location"]
+
+    response = client.get(detail_url)
+    assert "Suggested document type: <strong>Transportation Plan</strong>" in response.text
+    assert "transportation plan" in response.text
+
+
+def test_document_detail_shows_text_based_suggestion(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "scan001.txt",
+        b"This Behavior Intervention Plan (BIP) addresses classroom behavior.",
+    )
+    response = client.get(upload_response.headers["location"])
+    assert "Suggested document type: <strong>Behavior Intervention Plan (BIP)</strong>" in response.text
+
+
+def test_document_detail_shows_no_suggestion_when_ambiguous(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "combined.txt",
+        b"This covers both the Mediation Agreement and the Due Process Complaint filed.",
+    )
+    response = client.get(upload_response.headers["location"])
+    assert "Suggested document type" not in response.text
+
+
+def test_document_detail_shows_no_suggestion_when_no_match(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "random.txt", b"Nothing relevant in here at all.")
+    response = client.get(upload_response.headers["location"])
+    assert "Suggested document type" not in response.text
+
+
+def test_existing_typed_document_is_never_recategorized_by_a_suggestion(
+    client: TestClient, app: FastAPI
+):
+    """A document that already has a type set must never show a
+    suggestion, even if its filename/text would otherwise match --
+    viewing the page must never silently recategorize it.
+    """
+    case_id = _create_case(client)
+    iep_type_id = _type_id(app, "IEP")
+    upload_response = _upload(
+        client,
+        case_id,
+        "transportation-plan-2024.txt",
+        b"body",
+        document_type_id=str(iep_type_id),
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    response = client.get(f"/documents/{document_id}")
+    assert "Suggested document type" not in response.text
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        assert document.document_type_id == iep_type_id
+
+
+def test_user_can_accept_a_suggestion(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "Report Card.txt", b"unrelated body text")
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+    report_card_id = _type_id(app, "Report Card")
+
+    response = client.post(
+        f"/documents/{document_id}/document-type",
+        data={"document_type_id": str(report_card_id), "suggestion_source": "suggested"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        assert document.document_type_id == report_card_id
+
+        events = db.scalars(
+            select(DocumentCustodyEvent).where(
+                DocumentCustodyEvent.document_id == document_id,
+                DocumentCustodyEvent.event_type == "document_type_set",
+            )
+        ).all()
+    assert len(events) == 1
+    assert events[0].details["source"] == "suggested"
+    assert events[0].details["new_document_type_id"] == report_card_id
+
+
+def test_user_can_override_a_suggestion_with_a_different_type(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "Report Card.txt", b"unrelated body text")
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+    medical_id = _type_id(app, "Medical")
+
+    response = client.post(
+        f"/documents/{document_id}/document-type",
+        data={"document_type_id": str(medical_id)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        assert document.document_type_id == medical_id
+
+        events = db.scalars(
+            select(DocumentCustodyEvent).where(
+                DocumentCustodyEvent.document_id == document_id,
+                DocumentCustodyEvent.event_type == "document_type_set",
+            )
+        ).all()
+    assert len(events) == 1
+    assert events[0].details["source"] == "manual"
+
+
+def test_user_can_leave_type_unspecified_after_it_was_set(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    medical_id = _type_id(app, "Medical")
+    upload_response = _upload(
+        client, case_id, "note.txt", b"body", document_type_id=str(medical_id)
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    response = client.post(
+        f"/documents/{document_id}/document-type",
+        data={"document_type_id": ""},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        assert document.document_type_id is None
+
+
+def test_set_document_type_rejects_unknown_type_id(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "note.txt", b"body")
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    response = client.post(
+        f"/documents/{document_id}/document-type",
+        data={"document_type_id": "999999"},
+    )
+    assert response.status_code == 400
+
+
+def test_set_document_type_writes_no_event_when_value_unchanged(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "note.txt", b"body")
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    client.post(f"/documents/{document_id}/document-type", data={"document_type_id": ""})
+
+    with app.state.session_factory() as db:
+        events = db.scalars(
+            select(DocumentCustodyEvent).where(
+                DocumentCustodyEvent.document_id == document_id,
+                DocumentCustodyEvent.event_type == "document_type_set",
+            )
+        ).all()
+    assert events == []
+
+
+def test_document_type_dropdown_on_detail_page_lists_other_last(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = _upload(client, case_id, "note.txt", b"body")
+    response = client.get(upload_response.headers["location"])
+
+    match = re.search(
+        r'name="document_type_id">.*?</select>', response.text, re.S
+    )
+    options = re.findall(r"<option[^>]*>([^<]*)</option>", match.group(0))
+    assert options[-1] == "Other"
+    assert "Transportation Plan" in options
+    assert "Mediation" in options
+
+
+def test_upload_with_new_category_preserves_hash_and_read_only_copy(
+    client: TestClient, app: FastAPI
+):
+    """Ingestion of a document classified with one of the new Step 5.6
+    categories must still hash and read-only-protect the stored copy
+    exactly like any other upload.
+    """
+    case_id = _create_case(client)
+    mediation_id = _type_id(app, "Mediation")
+    content = b"Mediation Agreement content for integrity check."
+    expected_hash = hashlib.sha256(content).hexdigest()
+
+    upload_response = _upload(
+        client, case_id, "mediation.txt", content, document_type_id=str(mediation_id)
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        assert document.sha256_hash == expected_hash
+        assert document.document_type_id == mediation_id
+
+    stored_path = app.state.vault.root / document.stored_path
+    assert stored_path.read_bytes() == content
+    assert (stored_path.stat().st_mode & 0o777) == 0o400

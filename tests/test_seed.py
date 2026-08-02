@@ -30,6 +30,66 @@ def test_seed_document_types_is_idempotent(db_session: Session):
     assert len(names) == len(DEFAULT_DOCUMENT_TYPES)
 
 
+# FERChronos Step 5.6 categories.
+_NEW_DOCUMENT_TYPE_NAMES = [
+    "Transportation Plan",
+    "Functional Behavioral Assessment (FBA)",
+    "Behavior Intervention Plan (BIP)",
+    "Report Card",
+    "Mediation",
+    "Prior Written Notice",
+    "Meeting Notice",
+    "Consent Form",
+    "Progress Report",
+    "Service Log",
+    "Therapy Record",
+    "Manifestation Determination",
+    "Restraint/Seclusion Record",
+    "State Complaint",
+    "OCR Complaint",
+    "Due Process",
+]
+
+
+def test_default_document_types_has_no_duplicate_names():
+    names = [name for name, _ in DEFAULT_DOCUMENT_TYPES]
+    assert len(names) == len(set(names))
+
+
+def test_every_new_step_5_6_category_present_exactly_once():
+    names = [name for name, _ in DEFAULT_DOCUMENT_TYPES]
+    for new_name in _NEW_DOCUMENT_TYPE_NAMES:
+        assert names.count(new_name) == 1, f"{new_name!r} should appear exactly once"
+
+
+def test_every_pre_existing_category_preserved():
+    names = {name for name, _ in DEFAULT_DOCUMENT_TYPES}
+    pre_existing = {
+        "IEP",
+        "504 Plan",
+        "Evaluation",
+        "Correspondence",
+        "Discipline",
+        "Attendance",
+        "Grades",
+        "Medical",
+        "Legal Filing",
+        "Audio Transcript",
+    }
+    assert pre_existing <= names
+
+
+def test_other_is_the_last_document_type():
+    names = [name for name, _ in DEFAULT_DOCUMENT_TYPES]
+    assert names[-1] == "Other"
+
+
+def test_seeded_document_types_include_new_categories(db_session: Session):
+    names = set(db_session.scalars(select(DocumentType.name)))
+    for new_name in _NEW_DOCUMENT_TYPE_NAMES:
+        assert new_name in names
+
+
 def test_seed_fact_types_inserts_defaults(db_session: Session):
     # db_session fixture already seeds once; assert it took effect.
     names = set(db_session.scalars(select(FactType.name)))

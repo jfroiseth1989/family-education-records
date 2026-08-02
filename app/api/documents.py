@@ -17,15 +17,17 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_actor, get_db, get_vault
 from app.core.annotations.service import count_document_annotations
-from app.core.custody import verify_document_integrity
+from app.core.custody import verify_document_integrity, write_custody_event
 from app.core.document_dates import InvalidDateRangeError
+from app.core.document_type_suggestion import suggest_document_type
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
 from app.core.ocr.queue import enqueue_ocr_job
+from app.core.ocr.text import effective_text
 from app.core.tagging import list_case_tags
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document, DocumentDatePrecision
+from app.db.models import Case, Document, DocumentDatePrecision, DocumentType
 
 router = APIRouter(tags=["documents"])
 
@@ -182,6 +184,50 @@ def upload_document(
     return RedirectResponse(url=f"/documents/{document.document_id}", status_code=303)
 
 
+def _compute_type_suggestion(
+    document: Document, document_types: list[DocumentType]
+) -> dict | None:
+    """Locally suggest a document type for `document`, or None.
+
+    Only ever offered when the document has no type set yet (FERChronos
+    Step 5.6) -- an already-typed document is never second-guessed or
+    silently recategorized. Uses only the filename and the first few
+    pages' effective (extracted/OCR) text -- see
+    app/core/document_type_suggestion.py for the matching rules and the
+    standing no-AI/no-network guarantee. Resolves the suggested type name
+    to a concrete DocumentType row here (not in the suggestion module,
+    which is deliberately free of any DB dependency) so the template can
+    offer a one-click "accept" that posts a real type_id.
+    """
+    if document.document_type_id is not None:
+        return None
+
+    text_sample = "\n".join(
+        text
+        for text in (
+            effective_text(page).text
+            for page in sorted(document.pages, key=lambda p: p.page_number)[:3]
+        )
+        if text
+    )
+    suggestion = suggest_document_type(document.original_filename, text_sample)
+    if suggestion is None:
+        return None
+
+    matched_type = next((dt for dt in document_types if dt.name == suggestion.type_name), None)
+    if matched_type is None:
+        # Should not happen -- every trigger name matches a seeded
+        # DocumentType exactly (see app/db/seed.py) -- but never crash
+        # the page over it; just don't offer an unactionable suggestion.
+        return None
+
+    return {
+        "type_id": matched_type.type_id,
+        "type_name": suggestion.type_name,
+        "matched_terms": suggestion.matched_terms,
+    }
+
+
 @router.get("/documents/{document_id}", response_class=HTMLResponse)
 def get_document(
     request: Request, document_id: int, date_scan: int | None = None, db: Session = Depends(get_db)
@@ -212,6 +258,10 @@ def get_document(
     document_tags = sorted((link.tag for link in document.tag_links), key=lambda t: t.name.lower())
     case_tags = list_case_tags(db, document.case_id)
     annotation_counts = count_document_annotations(db, document.document_id)
+    document_types = list(
+        db.scalars(select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)).all()
+    )
+    type_suggestion = _compute_type_suggestion(document, document_types)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -227,8 +277,57 @@ def get_document(
             "case_tags": case_tags,
             "annotation_counts": annotation_counts,
             "date_scan_result": date_scan,
+            "document_types": document_types,
+            "type_suggestion": type_suggestion,
         },
     )
+
+
+@router.post("/documents/{document_id}/document-type")
+def set_document_type(
+    document_id: int,
+    document_type_id: str = Form(""),
+    suggestion_source: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
+) -> RedirectResponse:
+    """Set, change, or clear a document's type after ingestion.
+
+    Covers both accepting/overriding a locally computed type suggestion
+    (FERChronos Step 5.6) and simply correcting or filling in a type
+    later -- the Document Type field is always editable, not just at
+    upload time. Never touches the stored original file, its hash, or
+    any other document field; only `document_type_id` changes, and only
+    if it actually differs from the current value, logged as a custody
+    event either way that records whether the final choice came from a
+    suggestion or was picked manually -- see the Document model and
+    docs/DATA_MODEL.md "document_custody_events". A suggestion is never
+    applied automatically -- this route only ever runs in response to an
+    explicit human POST.
+    """
+    document = _get_document_or_404(db, document_id)
+
+    new_type_id = int(document_type_id) if document_type_id.strip() else None
+    if new_type_id is not None and db.get(DocumentType, new_type_id) is None:
+        raise HTTPException(status_code=400, detail=f"Document type {new_type_id} not found.")
+
+    if new_type_id != document.document_type_id:
+        previous_type_id = document.document_type_id
+        document.document_type_id = new_type_id
+        write_custody_event(
+            db,
+            document,
+            event_type="document_type_set",
+            actor=actor,
+            details={
+                "previous_document_type_id": previous_type_id,
+                "new_document_type_id": new_type_id,
+                "source": "suggested" if suggestion_source.strip() == "suggested" else "manual",
+            },
+        )
+        db.commit()
+
+    return RedirectResponse(url=f"/documents/{document.document_id}", status_code=303)
 
 
 @router.get("/documents/{document_id}/file")

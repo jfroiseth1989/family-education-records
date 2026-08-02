@@ -17,7 +17,34 @@
     <h2>Document details</h2>
     <table class="kv-table">
       <tr><th>Document ID</th><td>{{ document.document_id }}</td></tr>
-      <tr><th>Type</th><td>{{ document.document_type.name if document.document_type else "—" }}</td></tr>
+      <tr>
+        <th>Type</th>
+        <td>
+          {% set document_types_other_last = (document_types | rejectattr("name", "equalto", "Other") | list) + (document_types | selectattr("name", "equalto", "Other") | list) %}
+          <form method="post" action="/documents/{{ document.document_id }}/document-type" class="inline-type-form">
+            <select name="document_type_id">
+              <option value="">(unspecified)</option>
+              {% for dt in document_types_other_last %}
+                <option value="{{ dt.type_id }}" {% if document.document_type_id == dt.type_id %}selected{% endif %}>{{ dt.name }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit">Save type</button>
+          </form>
+          {% if type_suggestion %}
+            <p class="hint suggestion-hint">
+              Suggested document type: <strong>{{ type_suggestion.type_name }}</strong>
+              — matched &ldquo;{{ type_suggestion.matched_terms | join('", "') }}&rdquo;.
+              This is a local, deterministic keyword match only — never an AI
+              guess — and is never applied automatically.
+            </p>
+            <form method="post" action="/documents/{{ document.document_id }}/document-type" style="display:inline">
+              <input type="hidden" name="document_type_id" value="{{ type_suggestion.type_id }}">
+              <input type="hidden" name="suggestion_source" value="suggested">
+              <button type="submit" class="btn-secondary">Accept suggestion</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
       <tr><th>Source</th><td>{{ document.source or "—" }}</td></tr>
       <tr>
         <th>Document date</th>
