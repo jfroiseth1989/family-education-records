@@ -37,6 +37,16 @@
           {% endif %}
         </td>
       </tr>
+      <tr>
+        <th>Date received</th>
+        <td>
+          {% if document.date_received %}
+            {{ document.date_received.strftime("%Y-%m-%d") }}
+          {% else %}
+            Not recorded
+          {% endif %}
+        </td>
+      </tr>
       <tr><th>Notes</th><td>{{ document.notes or "—" }}</td></tr>
       <tr><th>Ingested</th><td>{{ document.ingested_at }} by {{ document.ingested_by }}</td></tr>
       <tr><th>File size</th><td>{{ document.file_size_bytes }} bytes</td></tr>
@@ -258,6 +268,11 @@
           blank if unknown. For a range, "Document date" above is the
           range's start and "Range end date" is its end.
         </p>
+        <label>
+          Date received (of this new version)
+          <input type="date" name="date_received">
+        </label>
+        <p class="hint">Date Received: When you received this copy.</p>
         <button type="submit">Ingest as new version</button>
       </form>
     </section>

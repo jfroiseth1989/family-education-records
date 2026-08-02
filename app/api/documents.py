@@ -69,15 +69,31 @@ def _save_upload_to_temp(upload: UploadFile) -> Path:
         return Path(tmp.name)
 
 
+def _parse_optional_date(raw: str, field_label: str) -> date | None:
+    """Parse one optional YYYY-MM-DD form field, shared by every date field
+    on the ingestion forms (document date, its range end, and date
+    received). An empty value means "unknown/not applicable" -- a fully
+    valid choice; an unparseable non-empty value is rejected with a 400
+    rather than silently ignored.
+    """
+    value = raw.strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_label} '{value}' (expected YYYY-MM-DD).",
+        ) from exc
+
+
 def _parse_document_date_form(
     document_date_raw: str, precision_raw: str, range_end_raw: str
 ) -> tuple[date | None, DocumentDatePrecision, date | None]:
-    """Parse the ingestion form's date fields: date, precision, range end.
+    """Parse the ingestion form's document-date fields: date, precision,
+    range end.
 
-    Each of the three fields is validated independently here (format only
-    -- an empty date/range-end means "unknown/not applicable," a fully
-    valid choice, and an unparseable non-empty value or unrecognized
-    precision is rejected with a 400 rather than silently ignored).
     Cross-field validation (e.g. "range" precision requires a range end,
     exact/approximate must not have one, range end must not precede the
     start) happens later, inside `ingest_document` via
@@ -91,18 +107,6 @@ def _parse_document_date_form(
             status_code=400,
             detail=f"Invalid document date precision '{precision_raw}'.",
         ) from exc
-
-    def _parse_optional_date(raw: str, field_label: str) -> date | None:
-        value = raw.strip()
-        if not value:
-            return None
-        try:
-            return date.fromisoformat(value)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid {field_label} '{value}' (expected YYYY-MM-DD).",
-            ) from exc
 
     parsed_date = _parse_optional_date(document_date_raw, "document date")
     parsed_range_end = _parse_optional_date(range_end_raw, "document date range end")
@@ -121,6 +125,7 @@ def upload_document(
     document_date: str = Form(""),
     document_date_precision: str = Form("exact"),
     document_date_range_end: str = Form(""),
+    date_received: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -135,6 +140,7 @@ def upload_document(
     parsed_date, date_precision, parsed_range_end = _parse_document_date_form(
         document_date, document_date_precision, document_date_range_end
     )
+    parsed_received = _parse_optional_date(date_received, "date received")
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -153,6 +159,7 @@ def upload_document(
                 document_date=parsed_date,
                 document_date_precision=date_precision,
                 document_date_range_end=parsed_range_end,
+                date_received=parsed_received,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
@@ -270,6 +277,7 @@ def upload_new_version(
     document_date: str = Form(""),
     document_date_precision: str = Form("exact"),
     document_date_range_end: str = Form(""),
+    date_received: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -281,11 +289,12 @@ def upload_new_version(
     independent document row before being linked — see
     app/core/ingestion/versioning.py.
 
-    The new version's document date is entered fresh here, not copied from
-    the prior version: a reissued or corrected record often carries a new
-    effective date (e.g. the date it was reissued), so silently inheriting
-    the old one could record the wrong date rather than an honestly
-    "unknown" one.
+    The new version's document date (and date received) is entered fresh
+    here, not copied from the prior version: a reissued or corrected record
+    often carries a new effective date (e.g. the date it was reissued) and
+    is typically received on its own new date too, so silently inheriting
+    either from the old version could record the wrong date rather than an
+    honestly "unknown" one.
     """
     existing_document = _get_document_or_404(db, document_id)
 
@@ -295,6 +304,7 @@ def upload_new_version(
     parsed_date, date_precision, parsed_range_end = _parse_document_date_form(
         document_date, document_date_precision, document_date_range_end
     )
+    parsed_received = _parse_optional_date(date_received, "date received")
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -312,6 +322,7 @@ def upload_new_version(
                 document_date=parsed_date,
                 document_date_precision=date_precision,
                 document_date_range_end=parsed_range_end,
+                date_received=parsed_received,
             )
         except DuplicateDocumentError as exc:
             db.rollback()

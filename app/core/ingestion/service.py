@@ -9,7 +9,7 @@ as the document row itself — see docs/ARCHITECTURE.md §3.1.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -53,6 +53,7 @@ def ingest_document(
     document_date: date | None = None,
     document_date_precision: DocumentDatePrecision = DocumentDatePrecision.EXACT,
     document_date_range_end: date | None = None,
+    date_received: date | None = None,
 ) -> Document:
     """Copy ``source_file_path`` into the vault and register it as a new document.
 
@@ -74,6 +75,11 @@ def ingest_document(
     when ``document_date_precision`` is ``RANGE``; see
     ``app.core.document_dates.set_document_date`` for validation rules —
     a mismatched combination raises ``InvalidDateRangeError``.
+
+    ``date_received`` (FERChronos UX refinement Step 4) is a separate,
+    optional plain date: when the family received *this copy* of the
+    record, distinct from ``document_date`` above. Unlike ``document_date``
+    it has no source/precision/range concept — just a date or nothing.
 
     Does not commit; the caller controls the transaction boundary (this
     lets API layers batch a request into a single commit).
@@ -120,6 +126,11 @@ def ingest_document(
         source=DocumentDateSource.MANUAL,
         precision=document_date_precision,
         range_end=document_date_range_end,
+    )
+    document.date_received = (
+        datetime.combine(date_received, time.min, tzinfo=timezone.utc)
+        if date_received is not None
+        else None
     )
     db.add(document)
     db.flush()  # assigns document.document_id before the custody event references it

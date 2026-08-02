@@ -352,6 +352,15 @@ class Document(Base):
     document_date_precision: Mapped[str | None] = mapped_column(String(20), nullable=True)
     document_date_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # When the family received *this copy* of the record -- distinct from
+    # `document_date` above, which is the date on/about the record itself
+    # (FERChronos UX refinement Step 4). Nullable, no source/precision/range
+    # concept of its own (unlike document_date): it's a single plain date a
+    # person enters directly, or leaves unset if unknown. Never inferred
+    # from `ingested_at` (when this app happened to see the file) or any
+    # filesystem timestamp.
+    date_received: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

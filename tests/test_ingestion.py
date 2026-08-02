@@ -4,6 +4,7 @@ bringing a file into the vault.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -161,3 +162,41 @@ def test_ingest_document_allows_same_content_in_different_cases(
     assert doc1.document_id != doc2.document_id
     assert doc1.sha256_hash == doc2.sha256_hash
     assert doc1.case_id != doc2.case_id
+
+
+def test_ingest_document_records_date_received_when_given(
+    db_session: Session, vault: VaultLayout, sample_case: Case, source_file: Path
+):
+    document = ingest_document(
+        db_session,
+        vault,
+        sample_case,
+        source_file_path=source_file,
+        original_filename="iep-2024.txt",
+        actor="test-user",
+        date_received=date(2024, 3, 15),
+    )
+    db_session.commit()
+
+    assert document.date_received is not None
+    assert document.date_received.date() == date(2024, 3, 15)
+
+
+def test_ingest_document_leaves_date_received_unset_by_default(
+    db_session: Session, vault: VaultLayout, sample_case: Case, source_file: Path
+):
+    """Every pre-Step-4 caller of ingest_document (the entire rest of this
+    test suite) never passes date_received -- it must default to None,
+    the "not recorded" state, not error or guess.
+    """
+    document = ingest_document(
+        db_session,
+        vault,
+        sample_case,
+        source_file_path=source_file,
+        original_filename="iep-2024.txt",
+        actor="test-user",
+    )
+    db_session.commit()
+
+    assert document.date_received is None

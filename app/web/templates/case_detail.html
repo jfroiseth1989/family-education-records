@@ -84,6 +84,11 @@
         Document date
         <input type="date" name="document_date">
       </label>
+      <p class="hint">
+        Document Date: When the record was created, issued, finalized,
+        signed, or applies — not today's date. Leave blank if unknown;
+        that's recorded as "unknown," not guessed.
+      </p>
       <label>
         Date precision
         <select name="document_date_precision">
@@ -97,11 +102,14 @@
         <input type="date" name="document_date_range_end">
       </label>
       <p class="hint">
-        The date on the record itself (e.g. the date printed on a letter or
-        evaluation) — not today's date. Leave blank if unknown; that's
-        recorded as "unknown," not guessed. For a range, "Document date"
-        above is the range's start and "Range end date" is its end.
+        For a range, "Document date" above is the range's start and
+        "Range end date" is its end.
       </p>
+      <label>
+        Date received
+        <input type="date" name="date_received">
+      </label>
+      <p class="hint">Date Received: When you received this copy.</p>
       <label>
         Notes
         <textarea name="notes" rows="2"></textarea>
