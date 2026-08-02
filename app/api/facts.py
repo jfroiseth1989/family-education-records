@@ -51,14 +51,14 @@ def _get_document_or_404(db: Session, document_id: int) -> Document:
 def _get_case_or_404(db: Session, case_id: int) -> Case:
     case = db.get(Case, case_id)
     if case is None:
-        raise HTTPException(status_code=404, detail=f"Case {case_id} not found.")
+        raise HTTPException(status_code=404, detail=f"Student {case_id} not found.")
     return case
 
 
 def _get_observation_or_404(db: Session, case_id: int, observation_id: int) -> AiObservation:
     observation = db.get(AiObservation, observation_id)
     if observation is None or observation.case_id != case_id:
-        raise HTTPException(status_code=404, detail=f"Observation {observation_id} not found in this case.")
+        raise HTTPException(status_code=404, detail=f"Observation {observation_id} not found for this student.")
     return observation
 
 

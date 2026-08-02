@@ -135,7 +135,7 @@ def test_ocr_jobs_page_shows_completed_job_after_processing(client: TestClient, 
 def test_ocr_jobs_page_empty_state(client: TestClient):
     case_id = _create_case(client)
     response = client.get(f"/cases/{case_id}/ocr-jobs")
-    assert "No OCR jobs for this case yet." in response.text
+    assert "No OCR jobs for this student yet." in response.text
 
 
 def test_ocr_jobs_page_nonexistent_case_returns_404(client: TestClient):

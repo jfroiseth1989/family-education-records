@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}OCR jobs — {{ case.label }} — FERPA Evidence Manager{% endblock %}
+{% block title %}OCR jobs — {{ case.label }} — FERChronos{% endblock %}
 {% block content %}
   <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.label }}</a></p>
   <h1>OCR jobs — {{ case.label }}</h1>
@@ -45,7 +45,7 @@
         </tbody>
       </table>
     {% else %}
-      <p class="empty-state">No OCR jobs for this case yet.</p>
+      <p class="empty-state">No OCR jobs for this student yet.</p>
     {% endif %}
   </section>
 {% endblock %}

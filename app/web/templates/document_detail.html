@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ document.original_filename }} — FERPA Evidence Manager{% endblock %}
+{% block title %}{{ document.original_filename }} — FERChronos{% endblock %}
 {% block content %}
   <p><a href="/cases/{{ document.case_id }}">&larr; {{ document.case.label }}</a></p>
   <h1>
@@ -186,7 +186,7 @@
         <input type="text" name="category" maxlength="100" placeholder="e.g. record-type, priority">
       </label>
       <p class="hint">
-        Adding a tag that already exists in this case (case-insensitive)
+        Adding a tag that already exists in this student's records (case-insensitive)
         reuses it rather than creating a duplicate.
       </p>
       <button type="submit">Add tag</button>

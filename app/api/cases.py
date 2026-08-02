@@ -23,7 +23,7 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 def _get_case_or_404(db: Session, case_id: int) -> Case:
     case = db.get(Case, case_id)
     if case is None:
-        raise HTTPException(status_code=404, detail=f"Case {case_id} not found.")
+        raise HTTPException(status_code=404, detail=f"Student {case_id} not found.")
     return case
 
 
@@ -48,7 +48,7 @@ def create_case(
     """Create a new case and redirect to its detail page."""
     label = label.strip()
     if not label:
-        raise HTTPException(status_code=400, detail="Case label is required.")
+        raise HTTPException(status_code=400, detail="Student name is required.")
 
     case = Case(label=label, description=description.strip() or None)
     db.add(case)
@@ -105,7 +105,7 @@ def edit_case(
 
     label = label.strip()
     if not label:
-        raise HTTPException(status_code=400, detail="Case label is required.")
+        raise HTTPException(status_code=400, detail="Student name is required.")
     valid_statuses = {s.value for s in CaseStatus}
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status '{status}'.")

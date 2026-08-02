@@ -37,14 +37,14 @@ router = APIRouter(tags=["timeline"])
 def _get_case_or_404(db: Session, case_id: int) -> Case:
     case = db.get(Case, case_id)
     if case is None:
-        raise HTTPException(status_code=404, detail=f"Case {case_id} not found.")
+        raise HTTPException(status_code=404, detail=f"Student {case_id} not found.")
     return case
 
 
 def _get_event_or_404(db: Session, case_id: int, event_id: int) -> TimelineEvent:
     event = db.get(TimelineEvent, event_id)
     if event is None or event.case_id != case_id:
-        raise HTTPException(status_code=404, detail=f"Timeline event {event_id} not found in this case.")
+        raise HTTPException(status_code=404, detail=f"Timeline event {event_id} not found for this student.")
     return event
 
 

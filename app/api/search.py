@@ -25,7 +25,7 @@ router = APIRouter(tags=["search"])
 def _get_case_or_404(db: Session, case_id: int) -> Case:
     case = db.get(Case, case_id)
     if case is None:
-        raise HTTPException(status_code=404, detail=f"Case {case_id} not found.")
+        raise HTTPException(status_code=404, detail=f"Student {case_id} not found.")
     return case
 
 

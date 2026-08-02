@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}View {{ document.original_filename }} — FERPA Evidence Manager{% endblock %}
+{% block title %}View {{ document.original_filename }} — FERChronos{% endblock %}
 {% block content %}
   <p><a href="/documents/{{ document.document_id }}">&larr; {{ document.original_filename }}</a></p>
   <h1>{{ document.original_filename }} <span class="meta">— page {{ current_page_number }} of {{ pages | length }}</span></h1>

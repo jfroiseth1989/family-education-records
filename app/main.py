@@ -61,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # run) — see app/jobs/worker.py::sweep_stuck_jobs.
         sweep_stuck_jobs(db)
 
-    app = FastAPI(title="FERPA Evidence Manager", version="0.1.0")
+    app = FastAPI(title="FERChronos", version="0.1.0")
     app.state.vault = vault
     app.state.session_factory = session_factory
     app.state.settings = settings
