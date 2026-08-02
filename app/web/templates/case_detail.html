@@ -10,6 +10,7 @@
   <section class="panel">
     <h2>Edit student</h2>
     <form method="post" action="/cases/{{ case.case_id }}/edit">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
       <label>
         Student Name
         <input type="text" name="label" required maxlength="200" value="{{ case.label }}">
@@ -60,6 +61,7 @@
     </p>
     <p class="upload-for">Uploading for <strong>{{ case.display_name }}</strong></p>
     <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data" class="upload-form">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
       <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a document to upload">
         <p class="dropzone-primary">Drag and drop a document here</p>
         <p class="dropzone-secondary">or click to browse</p>

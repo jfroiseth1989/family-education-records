@@ -83,6 +83,7 @@
             <details>
               <summary>Attach a supporting fact</summary>
               <form method="post" action="/cases/{{ case.case_id }}/timeline/{{ row.event.event_id }}/attach-fact">
+                <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                 <label>
                   Verified fact
                   <select name="fact_id" required>
@@ -96,6 +97,7 @@
             </details>
 
             <form method="post" action="/cases/{{ case.case_id }}/timeline/{{ row.event.event_id }}/delete" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
               <button type="submit" class="tag-remove" title="Delete event">Delete event</button>
             </form>
           </li>
@@ -116,6 +118,7 @@
       </p>
     {% else %}
       <form method="post" action="/cases/{{ case.case_id }}/timeline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <label>
           Event type
           <select name="event_type" required>

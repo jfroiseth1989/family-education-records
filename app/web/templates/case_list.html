@@ -6,6 +6,7 @@
   <section class="panel" id="add-student">
     <h2>Add Student</h2>
     <form method="post" action="/cases">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
       <label>
         Student name
         <input type="text" name="label" required maxlength="200" placeholder="e.g. Alex Rivera">

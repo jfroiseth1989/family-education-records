@@ -1,5 +1,12 @@
 """Tests for app/core/auth/csrf.py -- double-submit-cookie CSRF
-protection (Security Phase Step 2).
+protection (Security Phase Steps 2 and 3.5).
+
+`extract_submitted_csrf_token()` (the header-vs-form extraction used by
+`AuthEnforcementMiddleware` for Step 3.5's application-wide enforcement)
+needs a real Request to exercise the header/body/form-parsing paths, so
+it's covered by the end-to-end tests in tests/test_csrf_enforcement.py
+instead of here; this file covers the pure, request-shape-agnostic
+pieces.
 """
 
 from __future__ import annotations
@@ -7,7 +14,13 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException, Response
 
-from app.core.auth.csrf import CSRF_COOKIE_NAME, get_or_create_csrf_token, set_csrf_cookie, verify_csrf
+from app.core.auth.csrf import (
+    CSRF_COOKIE_NAME,
+    csrf_token_matches,
+    get_or_create_csrf_token,
+    set_csrf_cookie,
+    verify_csrf,
+)
 
 
 class _FakeRequest:
@@ -72,3 +85,25 @@ def test_verify_csrf_rejects_mismatched_values():
     with pytest.raises(HTTPException) as exc_info:
         verify_csrf(request, "a-different-value")
     assert exc_info.value.status_code == 403
+
+
+# --- csrf_token_matches (Security Phase Step 3.5) ---
+
+
+def test_csrf_token_matches_true_for_matching_values():
+    request = _FakeRequest({CSRF_COOKIE_NAME: "matching-value"})
+    assert csrf_token_matches(request, "matching-value") is True
+
+
+def test_csrf_token_matches_false_for_missing_cookie():
+    assert csrf_token_matches(_FakeRequest({}), "some-value") is False
+
+
+def test_csrf_token_matches_false_for_none_submitted_token():
+    request = _FakeRequest({CSRF_COOKIE_NAME: "cookie-value"})
+    assert csrf_token_matches(request, None) is False
+
+
+def test_csrf_token_matches_false_for_mismatched_values():
+    request = _FakeRequest({CSRF_COOKIE_NAME: "cookie-value"})
+    assert csrf_token_matches(request, "a-different-value") is False

@@ -52,6 +52,7 @@
       </p>
 
       <form id="highlight-form" method="post" action="/documents/{{ document.document_id }}/annotations/highlight" style="display:none">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
         <input type="hidden" id="highlight-start" name="start_offset" value="">
         <input type="hidden" id="highlight-end" name="end_offset" value="">
@@ -81,11 +82,13 @@
               &ldquo;{{ h.citation.quoted_text }}&rdquo;
               <span class="meta">(offsets {{ h.citation.start_offset }}&ndash;{{ h.citation.end_offset }}, by {{ h.created_by }})</span>
               <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ h.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                 <button type="submit" class="tag-remove" title="Remove highlight">&times;</button>
               </form>
               <details>
                 <summary>Assert fact from this citation</summary>
                 <form method="post" action="/documents/{{ document.document_id }}/facts/create-from-citation">
+                  <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                   <input type="hidden" name="citation_id" value="{{ h.citation.citation_id }}">
                   <input type="hidden" name="page" value="{{ current_page_number }}">
                   <label>
@@ -132,6 +135,7 @@
               {{ n.body_text }}
               <span class="meta">(by {{ n.created_by }}, {{ n.created_at }})</span>
               <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ n.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                 <button type="submit" class="tag-remove" title="Remove note">&times;</button>
               </form>
             </li>
@@ -141,6 +145,7 @@
         <p class="empty-state">No notes on this page yet.</p>
       {% endif %}
       <form method="post" action="/documents/{{ document.document_id }}/annotations/note">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
         <label>
           Add a note
@@ -159,6 +164,7 @@
               {{ b.body_text or "(no note)" }}
               <span class="meta">(by {{ b.created_by }}, {{ b.created_at }})</span>
               <form method="post" action="/documents/{{ document.document_id }}/annotations/{{ b.annotation_id }}/remove?page={{ current_page_number }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                 <button type="submit" class="tag-remove" title="Remove bookmark">&times;</button>
               </form>
             </li>
@@ -168,6 +174,7 @@
         <p class="empty-state">No bookmarks on this page yet.</p>
       {% endif %}
       <form method="post" action="/documents/{{ document.document_id }}/annotations/bookmark">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <input type="hidden" name="page_id" value="{{ current_page.page_id }}">
         <label>
           Bookmark label (optional)

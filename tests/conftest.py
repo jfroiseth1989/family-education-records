@@ -101,14 +101,12 @@ def anonymous_client(app) -> TestClient:
 TEST_OWNER_PASSWORD = "owner-password-123"
 
 
-@pytest.fixture
-def client(anonymous_client: TestClient) -> TestClient:
-    """A TestClient that has already completed first-run setup (which also
-    logs it in) via a real HTTP round-trip -- not a bypass. This is what
-    lets Step 3's deny-by-default enforcement middleware actually run in
-    front of every feature test while leaving those tests themselves
-    unchanged: they get a client that legitimately holds a valid session
-    cookie, the same way a real browser would after visiting /auth/setup.
+def _complete_setup_via_http(anonymous_client: TestClient) -> str:
+    """Real first-run setup (which also logs in) via an HTTP round-trip --
+    not a bypass. Returns the CSRF token that setup established, which is
+    both the value now in `anonymous_client`'s `csrf_token` cookie and the
+    only value that will pass `csrf_token_matches()` for this client's
+    session going forward.
     """
     csrf_response = anonymous_client.get("/auth/setup")
     csrf_token = anonymous_client.cookies.get("csrf_token") or csrf_response.cookies.get("csrf_token")
@@ -122,4 +120,51 @@ def client(anonymous_client: TestClient) -> TestClient:
         follow_redirects=False,
     )
     assert setup_response.status_code == 303, setup_response.text
+    return csrf_token
+
+
+@pytest.fixture
+def client(anonymous_client: TestClient) -> TestClient:
+    """A TestClient that has already completed first-run setup (which also
+    logs it in) via a real HTTP round-trip. This is what lets Step 3's
+    deny-by-default enforcement middleware actually run in front of every
+    feature test while leaving those tests themselves unchanged: they get
+    a client that legitimately holds a valid session cookie, the same way
+    a real browser would after visiting /auth/setup.
+
+    Also sets the `X-CSRF-Token` header (see
+    app.core.auth.csrf.extract_submitted_csrf_token's docstring for why
+    that header exists at all -- it's this application's documented path
+    for non-browser clients) to the same value as the CSRF cookie setup
+    just received, and leaves it set for every subsequent request this
+    client instance makes. httpx sends persistent client-level headers on
+    every call, so this is what lets the ~550 feature tests written
+    before Step 3.5's application-wide CSRF enforcement existed keep
+    calling `client.post(url, data={...})` with no `csrf_token` field and
+    no changes, while still exercising this middleware's real,
+    unweakened validation -- not a bypass, since the header carries a
+    genuine, correctly-matching token, the same as any real API client
+    following this application's documented pattern would send.
+    """
+    csrf_token = _complete_setup_via_http(anonymous_client)
+    anonymous_client.headers["X-CSRF-Token"] = csrf_token
+    return anonymous_client
+
+
+@pytest.fixture
+def client_no_csrf_header(anonymous_client: TestClient) -> TestClient:
+    """Identical to `client` (a real, logged-in session from a genuine
+    HTTP setup round-trip) except it deliberately does *not* get the
+    `X-CSRF-Token` header set afterward.
+
+    Exists only for tests/test_csrf_enforcement.py, which needs a client
+    that can exercise the missing/invalid/valid-token cases on its own
+    terms (via the `csrf_token` form field, exactly like this app's real
+    HTML forms) without the `client` fixture's header quietly making
+    every mutating request pass regardless of what's in the form body.
+    The correct token is still readable from this client's own
+    `csrf_token` cookie for tests that want to submit a genuinely valid
+    form field.
+    """
+    _complete_setup_via_http(anonymous_client)
     return anonymous_client
