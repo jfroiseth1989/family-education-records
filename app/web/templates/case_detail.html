@@ -3,6 +3,7 @@
 {% block content %}
   <p><a href="/cases">&larr; All students</a></p>
   <h1>{{ case.display_name }} <span class="status-badge status-{{ case.status }}">{{ case.status }}</span></h1>
+  <p class="overview-info-row">{{ case.status }} &bull; Created {{ case.created_at.strftime("%Y-%m-%d") }} &bull; {{ documents | length }} document{{ "" if documents | length == 1 else "s" }}</p>
   {% if case.description %}<p class="case-description">{{ case.description }}</p>{% endif %}
   <p class="meta">Student #{{ case.case_id }} · added {{ case.created_at }} · <a href="/cases/{{ case.case_id }}/search">Search this student</a> · <a href="/cases/{{ case.case_id }}/notes-search">Search your notes</a> · <a href="/cases/{{ case.case_id }}/ocr-jobs">OCR jobs</a> · <a href="/cases/{{ case.case_id }}/facts">Facts &amp; Observations</a> · <a href="/cases/{{ case.case_id }}/timeline">Timeline</a></p>
 
@@ -10,7 +11,7 @@
     <h2>Edit student</h2>
     <form method="post" action="/cases/{{ case.case_id }}/edit">
       <label>
-        Label
+        Student Name
         <input type="text" name="label" required maxlength="200" value="{{ case.label }}">
       </label>
       <label>
@@ -26,23 +27,23 @@
         </select>
       </label>
       <fieldset>
-        <legend>Preferred display name (optional)</legend>
+        <legend>Student Name Details (Optional)</legend>
         <p class="hint">
-          If you fill in all three, the student's name is shown throughout
-          the app as "Legal first (Preferred) Legal last" — for example,
-          "Isabella (Izzy) Froiseth." Leave these blank to just use the
-          student name above.
+          These fields allow FERChronos to display the student's name
+          naturally throughout the application while preserving the legal
+          name when needed.<br>
+          Example: Isabella (Izzy) Froiseth
         </p>
         <label>
-          Legal first name
+          Legal First Name
           <input type="text" name="legal_first_name" maxlength="100" value="{{ case.legal_first_name or '' }}">
         </label>
         <label>
-          Preferred name / nickname
+          Preferred Name / Nickname
           <input type="text" name="preferred_name" maxlength="100" value="{{ case.preferred_name or '' }}">
         </label>
         <label>
-          Legal last name
+          Legal Last Name
           <input type="text" name="legal_last_name" maxlength="100" value="{{ case.legal_last_name or '' }}">
         </label>
       </fieldset>
@@ -50,8 +51,8 @@
     </form>
   </section>
 
-  <section class="panel">
-    <h2>Add a document</h2>
+  <section class="panel panel-section-gap">
+    <h2>&#128196; Add a New Document</h2>
     <p class="hint">
       The file is copied read-only into the vault; the original you select
       here is never modified. A SHA-256 hash and a chain-of-custody entry
@@ -69,9 +70,10 @@
       <h3 class="upload-details-heading">Document details (optional)</h3>
       <label>
         Document type
+        {% set document_types_other_last = (document_types | rejectattr("name", "equalto", "Other") | list) + (document_types | selectattr("name", "equalto", "Other") | list) %}
         <select name="document_type_id">
           <option value="">(unspecified)</option>
-          {% for dt in document_types %}
+          {% for dt in document_types_other_last %}
             <option value="{{ dt.type_id }}">{{ dt.name }}</option>
           {% endfor %}
         </select>
@@ -118,7 +120,7 @@
     </form>
   </section>
 
-  <section class="panel" id="documents">
+  <section class="panel panel-section-gap" id="documents">
     <h2>Documents ({{ documents | length }})</h2>
     {% if documents %}
       <table class="data-table">
