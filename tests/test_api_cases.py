@@ -243,3 +243,63 @@ def test_dropzone_script_is_served(client: TestClient):
     response = client.get("/static/dropzone.js")
     assert response.status_code == 200
     assert "dataTransfer" in response.text
+
+
+def test_student_nav_absent_on_students_list_page(client: TestClient):
+    """No active student on /cases -- the section nav must not render."""
+    client.post("/cases", data={"label": "Some Student"})
+    response = client.get("/cases")
+    assert "student-nav" not in response.text
+
+
+def test_student_nav_present_with_overview_active_on_case_detail(client: TestClient):
+    create_response = client.post(
+        "/cases", data={"label": "Nav Test Student"}, follow_redirects=False
+    )
+    response = client.get(create_response.headers["location"])
+
+    assert "student-nav" in response.text
+    for label in ["Overview", "Documents", "Search", "Facts", "Timeline"]:
+        assert label in response.text
+    assert '<a href="/cases/1" class="active">Overview</a>' in response.text
+
+
+def test_student_nav_marks_search_tab_active_on_search_page(client: TestClient):
+    create_response = client.post(
+        "/cases", data={"label": "Nav Search Student"}, follow_redirects=False
+    )
+    case_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/cases/{case_id}/search")
+    assert f'href="/cases/{case_id}/search" class="active"' in response.text
+
+
+def test_student_nav_marks_facts_tab_active_on_facts_page(client: TestClient):
+    create_response = client.post(
+        "/cases", data={"label": "Nav Facts Student"}, follow_redirects=False
+    )
+    case_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/cases/{case_id}/facts")
+    assert f'href="/cases/{case_id}/facts" class="active"' in response.text
+
+
+def test_student_nav_marks_timeline_tab_active_on_timeline_page(client: TestClient):
+    create_response = client.post(
+        "/cases", data={"label": "Nav Timeline Student"}, follow_redirects=False
+    )
+    case_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/cases/{case_id}/timeline")
+    assert f'href="/cases/{case_id}/timeline" class="active"' in response.text
+
+
+def test_case_detail_documents_section_has_anchor_id(client: TestClient):
+    """The nav's Documents tab links to /cases/{id}#documents -- the
+    Documents section on the Overview page must actually have that id.
+    """
+    create_response = client.post(
+        "/cases", data={"label": "Anchor Test Student"}, follow_redirects=False
+    )
+    response = client.get(create_response.headers["location"])
+    assert 'id="documents"' in response.text

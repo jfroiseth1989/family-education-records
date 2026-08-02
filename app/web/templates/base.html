@@ -33,6 +33,17 @@
     </details>
     <span class="app-subtitle">Private • Local-only • Your records stay on this device</span>
   </header>
+  {% if active_student %}
+    {% set case_base = "/cases/" ~ active_student.case_id %}
+    {% set current_path = request.url.path %}
+    <nav class="student-nav">
+      <a href="{{ case_base }}"{% if current_path == case_base %} class="active"{% endif %}>Overview</a>
+      <a href="{{ case_base }}#documents"{% if current_path.startswith("/documents/") %} class="active"{% endif %}>Documents</a>
+      <a href="{{ case_base }}/search"{% if current_path == case_base ~ "/search" %} class="active"{% endif %}>Search</a>
+      <a href="{{ case_base }}/facts"{% if current_path == case_base ~ "/facts" %} class="active"{% endif %}>Facts</a>
+      <a href="{{ case_base }}/timeline"{% if current_path == case_base ~ "/timeline" %} class="active"{% endif %}>Timeline</a>
+    </nav>
+  {% endif %}
   <main class="app-main">
     {% block content %}{% endblock %}
   </main>

@@ -63,6 +63,19 @@ def test_document_detail_page_shows_student_selector_via_document_case(client: T
     assert "Selector Via Document" in response.text
 
 
+def test_document_detail_page_marks_documents_tab_active(client: TestClient):
+    """document_detail.html has no `case` in context -- the section nav's
+    active-tab resolution must work from `document.case` too, same as the
+    selector.
+    """
+    case_id = _create_case(client, label="Documents Tab Test")
+    upload_response = _upload(client, case_id, "iep.txt", b"IEP content here")
+
+    response = client.get(upload_response.headers["location"])
+    assert "student-nav" in response.text
+    assert f'href="/cases/{case_id}#documents" class="active"' in response.text
+
+
 def test_download_document_file_returns_original_bytes(client: TestClient):
     case_id = _create_case(client)
     content = b"exact original bytes"
