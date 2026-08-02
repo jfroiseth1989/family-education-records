@@ -23,11 +23,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
-from app.api import annotations, cases, documents, facts, ocr, search, tags, timeline
+from app.api import annotations, auth, cases, documents, facts, ocr, search, tags, timeline
 from app.config import Settings, get_settings
+from app.core.auth.session import get_current_session
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
-from app.db.models import Case
+from app.db.models import AppSession, Case
 from app.db.seed import seed_annotation_types, seed_document_types, seed_event_types, seed_fact_types
 from app.db.session import make_engine, make_session_factory
 from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
@@ -48,6 +49,20 @@ def _list_students_for_selector(request: Request) -> list[Case]:
     session_factory = request.app.state.session_factory
     with session_factory() as db:
         return list(db.scalars(select(Case).order_by(Case.label)).all())
+
+
+def _header_session(request: Request) -> AppSession | None:
+    """Jinja global backing base.html's Log in / Lock+Log out display
+    (Security Phase Step 2).
+
+    Purely informational in this step -- see app/core/auth/session.py's
+    module docstring. Nothing here blocks access; a later, separate step
+    adds the actual enforcement middleware. Same short-lived-session
+    pattern as `_list_students_for_selector` above.
+    """
+    session_factory = request.app.state.session_factory
+    with session_factory() as db:
+        return get_current_session(request, db)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -109,8 +124,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=BASE_DIR / "web" / "static"), name="static")
     app.state.templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")
     app.state.templates.env.globals["all_students"] = _list_students_for_selector
+    app.state.templates.env.globals["header_session"] = _header_session
 
     app.include_router(annotations.router)
+    app.include_router(auth.router)
     app.include_router(cases.router)
     app.include_router(documents.router)
     app.include_router(facts.router)

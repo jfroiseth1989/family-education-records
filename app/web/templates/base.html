@@ -32,6 +32,21 @@
       </ul>
     </details>
     <span class="app-subtitle">Private • Local-only • Your records stay on this device</span>
+    {% set current_session = header_session(request) %}
+    <div class="account-area">
+      {% if current_session %}
+        <form method="post" action="/auth/lock" class="inline-auth-form">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <button type="submit" class="btn-secondary">Lock</button>
+        </form>
+        <form method="post" action="/auth/logout" class="inline-auth-form">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <button type="submit" class="btn-secondary">Log out</button>
+        </form>
+      {% else %}
+        <a href="/auth/login">Log in</a>
+      {% endif %}
+    </div>
   </header>
   {% if active_student %}
     {% set case_base = "/cases/" ~ active_student.case_id %}

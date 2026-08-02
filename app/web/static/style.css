@@ -85,6 +85,31 @@ a:hover {
   margin-left: auto;
 }
 
+/* Header Log in / Lock / Log out area (Security Phase Step 2). */
+.account-area {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline-auth-form {
+  margin: 0;
+}
+
+/* First-run setup / login pages (Security Phase Step 2) -- rendered
+   from auth_base.html, which deliberately has no student selector or
+   nav, so nothing student-related is ever visible on these pages. */
+.auth-panel {
+  max-width: 420px;
+  margin: 3rem auto;
+}
+
+.hint.auth-error {
+  background: transparent;
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
 /* Persistent student selector. */
 .student-selector {
   position: relative;
