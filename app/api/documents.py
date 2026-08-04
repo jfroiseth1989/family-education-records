@@ -19,8 +19,10 @@ from app.api.deps import get_actor, get_db, get_vault
 from app.core.annotations.service import count_document_annotations
 from app.core.custody import verify_document_integrity, write_custody_event
 from app.core.document_dates import InvalidDateRangeError, set_document_date
-from app.core.document_date_suggestion import suggest_document_dates
-from app.core.document_type_suggestion import suggest_document_type
+from app.core.document_date_suggestion import DocumentDateSuggestions, suggest_document_dates
+from app.core.document_notes_suggestion import NotesSuggestion, compose_notes_summary
+from app.core.document_source_suggestion import SourceSuggestion, suggest_document_source
+from app.core.document_type_suggestion import DocumentTypeSuggestion, suggest_document_type
 from app.core.extraction.dispatcher import get_extractor, is_image_extension
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
@@ -146,6 +148,8 @@ def upload_document(
     document_type_source: str = Form(""),
     document_date_source: str = Form(""),
     date_received_source: str = Form(""),
+    source_source: str = Form(""),
+    notes_source: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -165,6 +169,8 @@ def upload_document(
         document_type_id=document_type_source,
         document_date=document_date_source,
         date_received=date_received_source,
+        source=source_source,
+        notes=notes_source,
     )
 
     temp_path = _save_upload_to_temp(file)
@@ -214,11 +220,11 @@ def preview_document(
     file: UploadFile,
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    """Local, pre-ingestion drop-zone preview: suggest a document type and
-    dates from the file's name and (for text-bearing formats) its native
-    extracted text -- filename-only for an image, since OCR is a
-    background job and deliberately never runs synchronously here (see
-    `_native_text_sample`'s docstring).
+    """Local, pre-ingestion drop-zone preview: suggest a document type,
+    source, dates, and a Notes summary from the file's name and (for
+    text-bearing formats) its native extracted text -- filename-only for
+    an image, since OCR is a background job and deliberately never runs
+    synchronously here (see `_native_text_sample`'s docstring).
 
     Writes nothing: no document row, no vault file, no hash, no custody
     event. The temp file this spools to is always deleted before
@@ -244,27 +250,39 @@ def preview_document(
         db.scalars(select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)).all()
     )
 
+    # Computed as objects first, not serialized dicts, so Notes
+    # composition (which needs the type/date/source *objects*, not their
+    # JSON shape) can reuse exactly what type/date/source suggestion
+    # already found -- never a second, independent read of the text.
+    type_suggestion = suggest_document_type(file.filename, text_sample)
+    date_suggestions = suggest_document_dates(text_sample, is_email=is_email)
+    source_suggestion = suggest_document_source(text_sample, is_email=is_email)
+    notes_suggestion = compose_notes_summary(
+        filename=file.filename,
+        text_sample=text_sample,
+        type_suggestion=type_suggestion,
+        document_date=date_suggestions.document_date,
+        informational=date_suggestions.informational,
+        source=source_suggestion,
+    )
+
     payload = {
-        "document_type": _resolve_type_suggestion(file.filename, text_sample, document_types),
-        **_resolve_date_suggestions(text_sample, is_email=is_email),
+        "document_type": _serialize_type_suggestion(type_suggestion, document_types),
+        **_serialize_date_suggestions(date_suggestions),
+        "source": _serialize_source_suggestion(source_suggestion),
+        "notes": _serialize_notes_suggestion(notes_suggestion),
     }
     return JSONResponse(payload)
 
 
-def _resolve_type_suggestion(
-    filename: str, text_sample: str, document_types: list[DocumentType]
+def _serialize_type_suggestion(
+    suggestion: DocumentTypeSuggestion | None, document_types: list[DocumentType]
 ) -> dict | None:
-    """Locally suggest a document type from `filename`/`text_sample`, or
-    None -- shared by the post-ingestion suggestion on the document detail
-    page (`_compute_type_suggestion`, below) and the pre-ingestion preview
-    endpoint (`preview_document`). See app/core/document_type_suggestion.py
-    for the matching rules and the standing no-AI/no-network guarantee.
-    Resolves the suggested type name to a concrete DocumentType row here
-    (not in the suggestion module, which is deliberately free of any DB
-    dependency) so the caller can offer a one-click "accept" that posts a
-    real type_id.
+    """Resolve an already-computed type suggestion to a concrete
+    DocumentType row (not done in the suggestion module, which is
+    deliberately free of any DB dependency) so the caller can offer a
+    one-click "accept" that posts a real type_id.
     """
-    suggestion = suggest_document_type(filename, text_sample)
     if suggestion is None:
         return None
 
@@ -280,6 +298,18 @@ def _resolve_type_suggestion(
         "type_name": suggestion.type_name,
         "matched_terms": list(suggestion.matched_terms),
     }
+
+
+def _resolve_type_suggestion(
+    filename: str, text_sample: str, document_types: list[DocumentType]
+) -> dict | None:
+    """Locally suggest a document type from `filename`/`text_sample`, or
+    None -- used by the post-ingestion suggestion on the document detail
+    page (`_compute_type_suggestion`, below). See
+    app/core/document_type_suggestion.py for the matching rules and the
+    standing no-AI/no-network guarantee.
+    """
+    return _serialize_type_suggestion(suggest_document_type(filename, text_sample), document_types)
 
 
 def _compute_type_suggestion(
@@ -317,14 +347,7 @@ def _serialize_date_field(suggestion) -> dict | None:
     }
 
 
-def _resolve_date_suggestions(text_sample: str, *, is_email: bool) -> dict:
-    """Locally suggest Document Date / Date Received values (and any
-    purely informational dates) from `text_sample` -- shared by the
-    pre-ingestion preview endpoint and, once OCR text becomes available,
-    the deferred suggestion shown on the document detail page. See
-    app/core/document_date_suggestion.py for the matching rules.
-    """
-    suggestions = suggest_document_dates(text_sample, is_email=is_email)
+def _serialize_date_suggestions(suggestions: DocumentDateSuggestions) -> dict:
     return {
         "document_date": _serialize_date_field(suggestions.document_date),
         "date_received": _serialize_date_field(suggestions.date_received),
@@ -333,6 +356,28 @@ def _resolve_date_suggestions(text_sample: str, *, is_email: bool) -> dict:
             for note in suggestions.informational
         ],
     }
+
+
+def _resolve_date_suggestions(text_sample: str, *, is_email: bool) -> dict:
+    """Locally suggest Document Date / Date Received values (and any
+    purely informational dates) from `text_sample` -- used by the
+    deferred suggestion shown on the document detail page once OCR text
+    becomes available. See app/core/document_date_suggestion.py for the
+    matching rules.
+    """
+    return _serialize_date_suggestions(suggest_document_dates(text_sample, is_email=is_email))
+
+
+def _serialize_source_suggestion(suggestion: SourceSuggestion | None) -> dict | None:
+    if suggestion is None:
+        return None
+    return {"value": suggestion.value, "matched_phrase": suggestion.matched_phrase}
+
+
+def _serialize_notes_suggestion(suggestion: NotesSuggestion | None) -> dict | None:
+    if suggestion is None:
+        return None
+    return {"value": suggestion.text}
 
 
 def _compute_date_suggestions(document: Document) -> dict | None:

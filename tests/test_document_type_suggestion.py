@@ -25,6 +25,54 @@ def test_text_iep_acronym_alone():
     assert "IEP" in result.matched_terms
 
 
+def test_regression_annual_iep_filename_alone():
+    """Regression: `IF 22-23 Annual IEP.pdf` with no text sample at all
+    (e.g. before any extraction has run) must suggest IEP from the
+    filename alone.
+    """
+    result = suggest_document_type("IF 22-23 Annual IEP.pdf")
+    assert result is not None
+    assert result.type_name == "IEP"
+
+
+def test_regression_annual_iep_filename_with_realistic_body_text():
+    """Regression: a real annual IEP's own body text routinely
+    cross-references a Behavior Intervention Plan, a Transportation
+    Plan, a Progress Report, and a Prior Written Notice as things the
+    IEP itself covers -- that must never be read as "several categories
+    match" ambiguity when the filename itself unambiguously says IEP.
+    Before the filename-priority fix, this combination returned None.
+    """
+    text = """
+    Individualized Education Program (IEP)
+    Student: Jane Doe
+    Meeting Date: 08/22/2023
+
+    Present Levels of Performance
+    Progress Report on prior IEP goals attached.
+
+    Special Transportation Plan: Student requires door-to-door transportation.
+
+    Behavior Intervention Plan (BIP) reviewed and updated.
+
+    Prior Written Notice of proposed changes to placement is included.
+
+    Related Services: Speech, OT
+    """
+    result = suggest_document_type("IF 22-23 Annual IEP.pdf", text_sample=text)
+    assert result is not None
+    assert result.type_name == "IEP"
+
+
+def test_regression_ambiguous_filename_itself_still_suggests_nothing():
+    """The filename-priority fix must only override ambiguity coming
+    from the *body text* -- a filename that is itself ambiguous between
+    two types must still yield no suggestion, exactly as before.
+    """
+    result = suggest_document_type("IEP and Progress Report.pdf")
+    assert result is None
+
+
 def test_filename_transportation_plan():
     result = suggest_document_type("Transportation Plan 2024.pdf")
     assert result is not None

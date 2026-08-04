@@ -126,6 +126,18 @@ _TYPE_TRIGGERS: tuple[tuple[str, tuple[_Trigger, ...]], ...] = (
 _MAX_TEXT_SAMPLE_CHARS = 4000
 
 
+def _matches_by_type(haystack: str) -> dict[str, list[str]]:
+    matched_by_type: dict[str, list[str]] = {}
+    for type_name, triggers in _TYPE_TRIGGERS:
+        hits = [t.display for t in triggers if re.search(t.pattern, haystack, re.IGNORECASE)]
+        if hits:
+            matched_by_type[type_name] = hits
+    return matched_by_type
+
+
+_TRIGGERS_BY_TYPE = dict(_TYPE_TRIGGERS)
+
+
 def suggest_document_type(
     filename: str, text_sample: str | None = None
 ) -> DocumentTypeSuggestion | None:
@@ -138,26 +150,44 @@ def suggest_document_type(
     suggestion." Never considers anything other than `filename` and
     `text_sample` -- in particular, never a student name or date, since
     neither is ever passed in here.
+
+    A filename that, on its own, unambiguously names exactly one type
+    (e.g. "IF 22-23 Annual IEP.pdf") wins outright, even if the body text
+    also happens to mention other types in passing -- a real IEP's own
+    text routinely references a Behavior Intervention Plan, a
+    Transportation Plan, or a Prior Written Notice as part of what the
+    IEP itself covers, and treating that ordinary cross-reference as
+    "ambiguous" would silently drop a suggestion the filename already
+    made clear. Ambiguity *within the filename itself* (e.g. a file named
+    "IEP and Progress Report.pdf") still yields no suggestion -- this
+    only overrides ambiguity coming from the body text, never from the
+    filename's own two-different-types case, which falls through to the
+    combined filename+text check below exactly as before.
     """
     # Filenames commonly use hyphens/underscores where prose uses spaces
     # (e.g. "transportation-plan-2024.pdf") -- normalize both to spaces
     # before matching so a phrase trigger still finds them. This never
     # changes matching behavior for text_sample, which already uses
     # normal prose spacing.
-    haystack = re.sub(r"[-_]+", " ", filename or "")
+    normalized_filename = re.sub(r"[-_]+", " ", filename or "")
+    haystack = normalized_filename
     if text_sample:
         haystack = haystack + "\n" + text_sample[:_MAX_TEXT_SAMPLE_CHARS]
 
-    matched_by_type: dict[str, list[str]] = {}
-    for type_name, triggers in _TYPE_TRIGGERS:
-        hits = [t.display for t in triggers if re.search(t.pattern, haystack, re.IGNORECASE)]
-        if hits:
-            matched_by_type[type_name] = hits
+    filename_matches = _matches_by_type(normalized_filename)
+    if len(filename_matches) == 1:
+        type_name = next(iter(filename_matches))
+    else:
+        combined_matches = _matches_by_type(haystack)
+        if len(combined_matches) != 1:
+            return None
+        type_name = next(iter(combined_matches))
 
-    if len(matched_by_type) != 1:
-        return None
-
-    ((type_name, hits),) = matched_by_type.items()
+    # Re-collect matched terms from the full filename+text haystack for
+    # this one confirmed type, so the shown explanation reflects every
+    # supporting mention (filename and body text alike), not just
+    # whichever half decided the winning type.
+    hits = [t.display for t in _TRIGGERS_BY_TYPE[type_name] if re.search(t.pattern, haystack, re.IGNORECASE)]
     # Prefer showing the longest (most specific/full) matched phrase
     # first -- e.g. "behavior intervention plan" ahead of "BIP" if a
     # document happens to contain both.

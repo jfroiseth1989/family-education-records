@@ -13,11 +13,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import fitz
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db.models import Document, DocumentCustodyEvent
+
+
+def _make_pdf_bytes(text: str, tmp_path: Path) -> bytes:
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    pdf_path = tmp_path / "scratch.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+    return pdf_path.read_bytes()
 
 
 def _create_case(client: TestClient, label: str = "Preview Test Case") -> int:
@@ -59,6 +70,64 @@ def test_preview_strong_type_and_date_match(client: TestClient):
     assert payload["date_received"] is None
 
 
+def test_regression_annual_iep_pdf_preview_request_and_response(client: TestClient, tmp_path: Path):
+    """Regression for the reported bug: uploading a file named
+    `IF 22-23 Annual IEP.pdf` left Document Type and dates blank. Exercises
+    the full preview request/response path (not just the classifier
+    directly) with a real PDF whose extractable text is exactly the kind
+    of realistic annual-IEP boilerplate that used to trigger a false
+    "ambiguous" result and suppress the type suggestion.
+    """
+    text = (
+        "Individualized Education Program (IEP)\n"
+        "Meeting Date: 08/22/2023\n"
+        "Progress Report on prior IEP goals attached.\n"
+        "Special Transportation Plan: door-to-door transportation required.\n"
+        "Behavior Intervention Plan (BIP) reviewed and updated.\n"
+        "Prior Written Notice of proposed changes to placement is included.\n"
+        "North Crawford School District\n"
+    )
+    pdf_bytes = _make_pdf_bytes(text, tmp_path)
+    case_id = _create_case(client)
+
+    response = client.post(
+        f"/cases/{case_id}/documents/preview",
+        files={"file": ("IF 22-23 Annual IEP.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["document_type"] is not None
+    assert payload["document_type"]["type_name"] == "IEP"
+    assert payload["document_date"] is not None
+    assert payload["document_date"]["value"] == "2023-08-22"
+    assert payload["source"] is not None
+    assert payload["source"]["value"] == "North Crawford School District"
+    assert payload["notes"] is not None
+    assert "IEP" in payload["notes"]["value"]
+
+
+def test_regression_annual_iep_pdf_filename_alone_no_text(client: TestClient):
+    """Same exact filename, but with no extractable text at all (e.g. a
+    scanned image-only PDF, before OCR has run) -- Document Type must
+    still come from the filename alone; dates correctly stay blank since
+    nothing in an empty text sample supports one.
+    """
+    case_id = _create_case(client)
+    # Not a real PDF -- the PDF extractor will fail to parse it and
+    # _native_text_sample() falls back to "", exactly like an
+    # unreadable/scanned file would before OCR completes.
+    response = client.post(
+        f"/cases/{case_id}/documents/preview",
+        files={"file": ("IF 22-23 Annual IEP.pdf", b"not a real pdf", "application/pdf")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["document_type"] is not None
+    assert payload["document_type"]["type_name"] == "IEP"
+    assert payload["document_date"] is None
+
+
 def test_preview_ambiguous_type_match_suggests_nothing(client: TestClient):
     case_id = _create_case(client)
     content = b"This covers both the Mediation Agreement and the Due Process Complaint filed."
@@ -95,6 +164,56 @@ def test_preview_date_received_only_from_dedicated_anchor(client: TestClient):
 def test_preview_unknown_case_returns_404(client: TestClient):
     response = _preview(client, 999999, "notes.txt", b"content")
     assert response.status_code == 404
+
+
+# --- source and notes suggestions via the preview endpoint -----------------
+
+
+def test_preview_suggests_source_from_school_district_name(client: TestClient):
+    case_id = _create_case(client)
+    content = b"This IEP was developed at North Crawford School District."
+
+    response = _preview(client, case_id, "iep.txt", content)
+    payload = response.json()
+    assert payload["source"] is not None
+    assert payload["source"]["value"] == "North Crawford School District"
+
+
+def test_preview_conflicting_source_mentions_suggest_nothing(client: TestClient):
+    case_id = _create_case(client)
+    content = b"Issued by North Crawford School District. Also sent by Central Office."
+
+    response = _preview(client, case_id, "iep.txt", content)
+    payload = response.json()
+    assert payload["source"] is None
+
+
+def test_preview_composes_notes_summary_from_type_date_and_source(client: TestClient):
+    content = (
+        b"Individualized Education Program (IEP)\n"
+        b"Meeting Date: 08/22/2023\n"
+        b"IEP Implementation Date: 09/01/2023\n"
+        b"North Crawford School District\n"
+    )
+    case_id = _create_case(client)
+
+    response = _preview(client, case_id, "iep.txt", content)
+    payload = response.json()
+    assert payload["notes"] is not None
+    assert payload["notes"]["value"] == (
+        "IEP. Meeting date: 2023-08-22. "
+        "Projected implementation date: 2023-09-01. North Crawford School District."
+    )
+
+
+def test_preview_notes_blank_when_nothing_supportable(client: TestClient):
+    case_id = _create_case(client)
+    content = b"Nothing relevant in this file at all."
+
+    response = _preview(client, case_id, "random.txt", content)
+    payload = response.json()
+    assert payload["notes"] is None
+    assert payload["source"] is None
 
 
 # --- preview writes nothing / original-file integrity ----------------------
@@ -172,6 +291,37 @@ def test_upload_with_provenance_fields_records_them_on_imported_event(
     assert imported_event.details["field_provenance"] == {
         "document_date": "suggested",
         "date_received": "manual",
+    }
+
+
+def test_upload_with_source_and_notes_provenance_recorded(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    upload_response = _upload(
+        client,
+        case_id,
+        "iep.txt",
+        b"North Crawford School District",
+        source="North Crawford School District",
+        source_source="suggested",
+        notes="IEP. North Crawford School District.",
+        notes_source="edited",
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        document = db.get(Document, document_id)
+        imported_event = db.scalars(
+            select(DocumentCustodyEvent).where(
+                DocumentCustodyEvent.document_id == document_id,
+                DocumentCustodyEvent.event_type == "imported",
+            )
+        ).one()
+
+    assert document.source == "North Crawford School District"
+    assert document.notes == "IEP. North Crawford School District."
+    assert imported_event.details["field_provenance"] == {
+        "source": "suggested",
+        "notes": "edited",
     }
 
 

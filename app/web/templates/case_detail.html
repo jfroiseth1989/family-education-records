@@ -65,6 +65,8 @@
       <input type="hidden" name="document_type_source" value="">
       <input type="hidden" name="document_date_source" value="">
       <input type="hidden" name="date_received_source" value="">
+      <input type="hidden" name="source_source" value="">
+      <input type="hidden" name="notes_source" value="">
       <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a document to upload">
         <p class="dropzone-primary">Drag and drop a document here</p>
         <p class="dropzone-secondary">or click to browse</p>
@@ -77,6 +79,7 @@
         call — and may suggest values below. Every suggestion stays fully
         editable, and your own choice always wins.
       </p>
+      <p class="hint preview-status" data-preview-status hidden></p>
 
       <h3 class="upload-details-heading">Document details (optional)</h3>
       <label>
@@ -94,6 +97,7 @@
         Source
         <input type="text" name="source" maxlength="300" placeholder="e.g. emailed by district">
       </label>
+      <p class="hint suggestion-hint" data-suggestion-note="source" hidden></p>
       <label>
         Document date
         <input type="date" name="document_date">
@@ -131,6 +135,7 @@
         Notes
         <textarea name="notes" rows="2"></textarea>
       </label>
+      <p class="hint suggestion-hint" data-suggestion-note="notes" hidden></p>
       <button type="submit">Ingest document</button>
     </form>
   </section>

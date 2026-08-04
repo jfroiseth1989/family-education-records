@@ -21,10 +21,15 @@
     }
     var dropzone = form.querySelector(".dropzone");
     var csrfInput = form.querySelector('input[name="csrf_token"]');
+    var statusEl = form.querySelector("[data-preview-status]");
 
     var typeSelect = form.querySelector('select[name="document_type_id"]');
     var typeSource = form.querySelector('input[name="document_type_source"]');
     var typeNote = form.querySelector('[data-suggestion-note="document_type"]');
+
+    var sourceInput = form.querySelector('input[name="source"]');
+    var sourceSource = form.querySelector('input[name="source_source"]');
+    var sourceNote = form.querySelector('[data-suggestion-note="source"]');
 
     var dateInput = form.querySelector('input[name="document_date"]');
     var precisionSelect = form.querySelector('select[name="document_date_precision"]');
@@ -36,10 +41,22 @@
     var receivedSource = form.querySelector('input[name="date_received_source"]');
     var receivedNote = form.querySelector('[data-suggestion-note="date_received"]');
 
+    var notesInput = form.querySelector('textarea[name="notes"]');
+    var notesSource = form.querySelector('input[name="notes_source"]');
+    var notesNote = form.querySelector('[data-suggestion-note="notes"]');
+
     var infoNote = form.querySelector('[data-suggestion-note="informational"]');
 
     var touched = {};
     var suggestedValues = {};
+
+    function setStatus(text) {
+      if (!statusEl) {
+        return;
+      }
+      statusEl.textContent = text;
+      statusEl.hidden = !text;
+    }
 
     function showNote(el, text) {
       if (!el) {
@@ -90,6 +107,9 @@
     watchField(typeSelect, "document_type_id", typeSource, function () {
       return typeSelect.value;
     });
+    watchField(sourceInput, "source", sourceSource, function () {
+      return sourceInput.value;
+    });
     watchField(dateInput, "document_date", dateSource, function () {
       return dateInput.value;
     });
@@ -102,21 +122,24 @@
     watchField(receivedInput, "date_received", receivedSource, function () {
       return receivedInput.value;
     });
+    watchField(notesInput, "notes", notesSource, function () {
+      return notesInput.value;
+    });
 
     function resetForNewFile() {
       touched = {};
       suggestedValues = {};
-      [typeSource, dateSource, receivedSource].forEach(function (el) {
+      [typeSource, sourceSource, dateSource, receivedSource, notesSource].forEach(function (el) {
         if (el) {
           el.value = "";
         }
       });
-      [typeNote, dateNote, receivedNote, infoNote].forEach(clearNote);
+      [typeNote, sourceNote, dateNote, receivedNote, notesNote, infoNote].forEach(clearNote);
     }
 
     function applyTypeSuggestion(suggestion) {
       if (!suggestion || !typeSelect) {
-        return;
+        return false;
       }
       suggestedValues.document_type_id = String(suggestion.type_id);
       if (!touched.document_type_id) {
@@ -129,11 +152,45 @@
         typeNote,
         "Suggested document type: " + suggestion.type_name + " — change if incorrect"
       );
+      return true;
+    }
+
+    function applySourceSuggestion(suggestion) {
+      if (!suggestion || !sourceInput) {
+        return false;
+      }
+      suggestedValues.source = suggestion.value;
+      if (!touched.source) {
+        sourceInput.value = suggestion.value;
+        if (sourceSource) {
+          sourceSource.value = "suggested";
+        }
+      }
+      showNote(sourceNote, 'Source — suggested from: "' + suggestion.matched_phrase + '"');
+      return true;
+    }
+
+    function applyNotesSuggestion(suggestion) {
+      if (!suggestion || !notesInput) {
+        return false;
+      }
+      suggestedValues.notes = suggestion.value;
+      if (!touched.notes) {
+        notesInput.value = suggestion.value;
+        if (notesSource) {
+          notesSource.value = "suggested";
+        }
+      }
+      showNote(
+        notesNote,
+        "Notes — composed locally from the extracted document type, dates, and source; edit or clear as needed."
+      );
+      return true;
     }
 
     function applyDateSuggestion(field, suggestion, valueInput, sourceInput, noteEl, label) {
       if (!suggestion || !valueInput) {
-        return;
+        return false;
       }
       suggestedValues[field] = suggestion.value;
       if (!touched[field]) {
@@ -151,23 +208,27 @@
         }
       }
       showNote(noteEl, label + ' — suggested from: "' + suggestion.matched_phrase + '"');
+      return true;
     }
 
     function applyInformationalNotes(notes) {
       if (!notes || notes.length === 0 || !infoNote) {
-        return;
+        return false;
       }
       var lines = notes.map(function (note) {
         return note.label + ": " + note.value + ' ("' + note.matched_phrase + '")';
       });
       showNote(infoNote, "Also found in text — " + lines.join("; ") + " — not auto-filled into any field.");
+      return true;
     }
 
     function runPreview(file) {
       resetForNewFile();
       if (!file) {
+        setStatus("");
         return;
       }
+      setStatus("Analyzing document…");
       var body = new FormData();
       body.append("file", file);
       var headers = {};
@@ -185,30 +246,50 @@
         })
         .then(function (data) {
           if (!data) {
+            setStatus("Preview failed — you can still enter the fields manually");
             return;
           }
-          applyTypeSuggestion(data.document_type);
-          applyDateSuggestion(
-            "document_date",
-            data.document_date,
-            dateInput,
-            dateSource,
-            dateNote,
-            "Document date"
-          );
-          applyDateSuggestion(
-            "date_received",
-            data.date_received,
-            receivedInput,
-            receivedSource,
-            receivedNote,
-            "Date received"
-          );
-          applyInformationalNotes(data.informational_dates);
+          var appliedAny = false;
+          if (applyTypeSuggestion(data.document_type)) {
+            appliedAny = true;
+          }
+          if (applySourceSuggestion(data.source)) {
+            appliedAny = true;
+          }
+          if (
+            applyDateSuggestion(
+              "document_date",
+              data.document_date,
+              dateInput,
+              dateSource,
+              dateNote,
+              "Document date"
+            )
+          ) {
+            appliedAny = true;
+          }
+          if (
+            applyDateSuggestion(
+              "date_received",
+              data.date_received,
+              receivedInput,
+              receivedSource,
+              receivedNote,
+              "Date received"
+            )
+          ) {
+            appliedAny = true;
+          }
+          if (applyNotesSuggestion(data.notes)) {
+            appliedAny = true;
+          }
+          var hasInformational = applyInformationalNotes(data.informational_dates);
+          setStatus(appliedAny || hasInformational ? "Suggestions added" : "No reliable suggestions found");
         })
         .catch(function () {
           // Best-effort local convenience only -- a failed/blocked preview
           // request never alters or blocks the actual upload below.
+          setStatus("Preview failed — you can still enter the fields manually");
         });
     }
 
