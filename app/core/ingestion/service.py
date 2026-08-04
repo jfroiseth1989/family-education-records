@@ -54,6 +54,7 @@ def ingest_document(
     document_date_precision: DocumentDatePrecision = DocumentDatePrecision.EXACT,
     document_date_range_end: date | None = None,
     date_received: date | None = None,
+    field_provenance: dict[str, str] | None = None,
 ) -> Document:
     """Copy ``source_file_path`` into the vault and register it as a new document.
 
@@ -80,6 +81,21 @@ def ingest_document(
     optional plain date: when the family received *this copy* of the
     record, distinct from ``document_date`` above. Unlike ``document_date``
     it has no source/precision/range concept — just a date or nothing.
+
+    ``field_provenance`` (FERChronos document drop-zone auto-fill) is an
+    optional ``{field_name: "suggested"|"accepted"|"edited"|"manual"|
+    "cleared"}`` map recording how each of ``document_type_id``,
+    ``document_date``, and ``date_received`` was actually arrived at —
+    never applied automatically, only ever what a human ultimately
+    submitted (see app/core/document_type_suggestion.py and
+    app/core/document_date_suggestion.py). Recorded on the ``imported``
+    custody event below, not a separate column, matching how a later
+    ``document_type_set`` custody event already records its own
+    ``"suggested"``/``"manual"`` source (FERChronos Step 5.6). ``None`` or
+    an empty map (the default -- every ingestion call site that doesn't
+    use the drop-zone preview feature, including every pre-existing
+    caller) omits provenance from the event entirely rather than
+    recording an uninteresting "manual" for every field.
 
     Does not commit; the caller controls the transaction boundary (this
     lets API layers batch a request into a single commit).
@@ -135,6 +151,12 @@ def ingest_document(
     db.add(document)
     db.flush()  # assigns document.document_id before the custody event references it
 
-    write_custody_event(db, document, event_type="imported", actor=actor)
+    write_custody_event(
+        db,
+        document,
+        event_type="imported",
+        actor=actor,
+        details={"field_provenance": field_provenance} if field_provenance else None,
+    )
 
     return document

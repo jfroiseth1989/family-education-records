@@ -64,6 +64,24 @@
           {% else %}
             Unknown / not recorded
           {% endif %}
+          {% if date_suggestions and date_suggestions.document_date %}
+            {% set dd = date_suggestions.document_date %}
+            <p class="hint suggestion-hint">
+              Suggested document date: <strong>{{ dd.value }}{% if dd.range_end %} &ndash; {{ dd.range_end }}{% endif %}</strong>
+              — suggested from: &ldquo;{{ dd.matched_phrase }}&rdquo;.
+              This is a local, deterministic match only — never an AI guess —
+              and is never applied automatically.
+            </p>
+            <form method="post" action="/documents/{{ document.document_id }}/document-date" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+              <input type="hidden" name="document_date" value="{{ dd.value }}">
+              <input type="hidden" name="document_date_precision" value="{{ dd.precision }}">
+              <input type="hidden" name="document_date_range_end" value="{{ dd.range_end or '' }}">
+              <input type="hidden" name="date_received" value="{{ document.date_received.strftime('%Y-%m-%d') if document.date_received else '' }}">
+              <input type="hidden" name="document_date_source" value="suggested">
+              <button type="submit" class="btn-secondary">Accept suggestion</button>
+            </form>
+          {% endif %}
         </td>
       </tr>
       <tr>
@@ -73,6 +91,32 @@
             {{ document.date_received.strftime("%Y-%m-%d") }}
           {% else %}
             Not recorded
+          {% endif %}
+          {% if date_suggestions and date_suggestions.date_received %}
+            {% set dr = date_suggestions.date_received %}
+            <p class="hint suggestion-hint">
+              Suggested date received: <strong>{{ dr.value }}</strong>
+              — suggested from: &ldquo;{{ dr.matched_phrase }}&rdquo;.
+              This is a local, deterministic match only — never an AI guess —
+              and is never applied automatically.
+            </p>
+            <form method="post" action="/documents/{{ document.document_id }}/document-date" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+              <input type="hidden" name="document_date" value="{{ document.document_date.strftime('%Y-%m-%d') if document.document_date else '' }}">
+              <input type="hidden" name="document_date_precision" value="{{ document.document_date_precision or 'exact' }}">
+              <input type="hidden" name="document_date_range_end" value="{{ document.document_date_range_end.strftime('%Y-%m-%d') if document.document_date_range_end else '' }}">
+              <input type="hidden" name="date_received" value="{{ dr.value }}">
+              <input type="hidden" name="date_received_source" value="suggested">
+              <button type="submit" class="btn-secondary">Accept suggestion</button>
+            </form>
+          {% endif %}
+          {% if date_suggestions and date_suggestions.informational_dates %}
+            {% for note in date_suggestions.informational_dates %}
+              <p class="hint">
+                Also found in text — {{ note.label }}: <strong>{{ note.value }}</strong>
+                (&ldquo;{{ note.matched_phrase }}&rdquo;) — not auto-filled into any field.
+              </p>
+            {% endfor %}
           {% endif %}
         </td>
       </tr>
@@ -270,8 +314,10 @@
         new current version superseding this one. This document is never
         modified or deleted — it remains in the vault exactly as imported.
       </p>
-      <form method="post" action="/documents/{{ document.document_id }}/new-version" enctype="multipart/form-data">
+      <form method="post" action="/documents/{{ document.document_id }}/new-version" enctype="multipart/form-data" data-preview-url="/cases/{{ document.case_id }}/documents/preview">
         <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <input type="hidden" name="document_date_source" value="">
+        <input type="hidden" name="date_received_source" value="">
         <label>
           Corrected/reissued file
           <input type="file" name="file" required>
@@ -302,11 +348,14 @@
           blank if unknown. For a range, "Document date" above is the
           range's start and "Range end date" is its end.
         </p>
+        <p class="hint suggestion-hint" data-suggestion-note="document_date" hidden></p>
         <label>
           Date received (of this new version)
           <input type="date" name="date_received">
         </label>
         <p class="hint">Date Received: When you received this copy.</p>
+        <p class="hint suggestion-hint" data-suggestion-note="date_received" hidden></p>
+        <p class="hint" data-suggestion-note="informational" hidden></p>
         <button type="submit">Ingest as new version</button>
       </form>
     </section>
@@ -329,4 +378,5 @@
       </tbody>
     </table>
   </section>
+  <script src="/static/document_preview.js"></script>
 {% endblock %}

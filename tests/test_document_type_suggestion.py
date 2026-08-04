@@ -9,6 +9,22 @@ from pathlib import Path
 from app.core.document_type_suggestion import suggest_document_type
 
 
+def test_text_iep_full_phrase():
+    result = suggest_document_type(
+        "notes.pdf", text_sample="The team finalized the Individualized Education Program today."
+    )
+    assert result is not None
+    assert result.type_name == "IEP"
+    assert "individualized education program" in result.matched_terms
+
+
+def test_text_iep_acronym_alone():
+    result = suggest_document_type("scan.pdf", text_sample="Please review the attached IEP.")
+    assert result is not None
+    assert result.type_name == "IEP"
+    assert "IEP" in result.matched_terms
+
+
 def test_filename_transportation_plan():
     result = suggest_document_type("Transportation Plan 2024.pdf")
     assert result is not None

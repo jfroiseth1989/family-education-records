@@ -11,12 +11,12 @@ produced it. `effective_text()` (app/core/ocr/text.py) is used as the
 scan source, so a page that needed OCR is scanned exactly like a
 natively-extracted one, once Phase 3 has populated it.
 
-This is deliberately narrow, not a general date parser: three fixed
-pattern families (full/abbreviated month name, ISO 8601, numeric
-MM/DD/YYYY assuming US convention), each with a fixed confidence score
-tied to how unambiguous that pattern is -- never a computed/learned
-score. A 2-digit year is intentionally never matched; assuming a century
-would be a guess, not a deterministic read of what's on the page.
+The actual pattern matching (three fixed pattern families, calendar
+validation, confidence scores) lives in app/core/date_patterns.py,
+shared with app/core/document_date_suggestion.py (FERChronos document
+drop-zone auto-fill) so both scan for "what does a date look like" the
+same way. `_DateMatch`/`_find_date_matches` are kept here as aliases for
+backward compatibility with existing callers/tests of this module.
 
 Each match's parsed `date` is passed through as `observed_date` (Phase 4
 Step 0) so a later promotion of the observation carries a real,
@@ -26,13 +26,13 @@ formatted string in `statement`.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import datetime, time, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.date_patterns import DateMatch as _DateMatch
+from app.core.date_patterns import find_date_matches as _find_date_matches
 from app.core.facts.service import create_ai_observation
 from app.core.ocr.text import effective_text
 from app.db.models import AiObservation, AiObservationCitation, Case, Citation, Document
@@ -40,111 +40,6 @@ from app.db.models import AiObservation, AiObservationCitation, Case, Citation, 
 SYSTEM_ACTOR = "system (regex-date-parse-v1)"
 METHOD = "regex-date-parse-v1"
 FACT_TYPE = "date"
-
-_MONTH_NAMES = {
-    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
-    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
-}
-_MONTH_ABBREVIATIONS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8,
-    "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
-}
-
-# A century-and-a-bit window -- wide enough to cover any real education
-# record, narrow enough to reject a numeric match that's actually
-# something else (a case number, a page count) that happens to fall in
-# the 4-digit-year slot of the numeric pattern below.
-_MIN_YEAR = 1900
-
-
-def _max_year() -> int:
-    return datetime.now(timezone.utc).year + 2
-
-
-_MONTH_NAME_PATTERN = re.compile(
-    r"\b(?P<month>[A-Za-z]+)\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<year>\d{4})\b"
-)
-_ISO_PATTERN = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\b")
-_NUMERIC_PATTERN = re.compile(r"\b(?P<month>\d{1,2})[/-](?P<day>\d{1,2})[/-](?P<year>\d{4})\b")
-
-
-@dataclass(frozen=True)
-class _DateMatch:
-    start: int
-    end: int
-    matched_text: str
-    parsed_date: date
-    confidence_score: float
-
-
-def _valid_date(year: int, month: int, day: int) -> date | None:
-    if not (_MIN_YEAR <= year <= _max_year()):
-        return None
-    try:
-        return date(year, month, day)
-    except ValueError:
-        return None
-
-
-def _find_month_name_matches(text: str) -> list[_DateMatch]:
-    matches = []
-    for m in _MONTH_NAME_PATTERN.finditer(text):
-        month_word = m.group("month").lower()
-        month = _MONTH_NAMES.get(month_word) or _MONTH_ABBREVIATIONS.get(month_word)
-        if month is None:
-            continue
-        parsed = _valid_date(int(m.group("year")), month, int(m.group("day")))
-        if parsed is None:
-            continue
-        matches.append(_DateMatch(m.start(), m.end(), m.group(0), parsed, 0.9))
-    return matches
-
-
-def _find_iso_matches(text: str) -> list[_DateMatch]:
-    matches = []
-    for m in _ISO_PATTERN.finditer(text):
-        parsed = _valid_date(int(m.group("year")), int(m.group("month")), int(m.group("day")))
-        if parsed is None:
-            continue
-        matches.append(_DateMatch(m.start(), m.end(), m.group(0), parsed, 0.85))
-    return matches
-
-
-def _find_numeric_matches(text: str) -> list[_DateMatch]:
-    """MM/DD/YYYY or MM-DD-YYYY, US convention assumed -- lower confidence
-    than the other two patterns since the separator alone can't
-    disambiguate month-first from day-first, and it's the pattern most
-    likely to false-positive on an unrelated number sequence.
-    """
-    matches = []
-    for m in _NUMERIC_PATTERN.finditer(text):
-        parsed = _valid_date(int(m.group("year")), int(m.group("month")), int(m.group("day")))
-        if parsed is None:
-            continue
-        matches.append(_DateMatch(m.start(), m.end(), m.group(0), parsed, 0.6))
-    return matches
-
-
-def _find_date_matches(text: str) -> list[_DateMatch]:
-    """All date-like matches in `text`, across all three patterns, with
-    overlapping spans resolved by keeping the earliest-starting,
-    highest-confidence match (patterns are structurally distinct enough
-    -- ISO requires the year first, numeric requires it last -- that a
-    true overlap is rare, but this keeps the result well-defined either way).
-    """
-    all_matches = (
-        _find_month_name_matches(text) + _find_iso_matches(text) + _find_numeric_matches(text)
-    )
-    all_matches.sort(key=lambda dm: (dm.start, -dm.confidence_score))
-
-    kept: list[_DateMatch] = []
-    last_end = -1
-    for dm in all_matches:
-        if dm.start < last_end:
-            continue
-        kept.append(dm)
-        last_end = dm.end
-    return kept
 
 
 def _observation_exists_for_span(db: Session, page_id: int, start_offset: int, end_offset: int) -> bool:

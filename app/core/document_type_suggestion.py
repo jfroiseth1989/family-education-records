@@ -57,6 +57,14 @@ def _t(text: str, display: str | None = None) -> _Trigger:
 # requires "complaint" alongside "ocr", so real OCR-review pages never
 # match it.
 _TYPE_TRIGGERS: tuple[tuple[str, tuple[_Trigger, ...]], ...] = (
+    (
+        "IEP",
+        (
+            _t("individualized education program"),
+            _t("individualized education plan"),
+            _t("iep", display="IEP"),
+        ),
+    ),
     ("Transportation Plan", (_t("transportation plan"),)),
     (
         "Functional Behavioral Assessment (FBA)",

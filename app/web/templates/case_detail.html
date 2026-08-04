@@ -60,14 +60,23 @@
       are recorded immediately.
     </p>
     <p class="upload-for">Uploading for <strong>{{ case.display_name }}</strong></p>
-    <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data" class="upload-form">
+    <form method="post" action="/cases/{{ case.case_id }}/documents" enctype="multipart/form-data" class="upload-form" data-preview-url="/cases/{{ case.case_id }}/documents/preview">
       <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+      <input type="hidden" name="document_type_source" value="">
+      <input type="hidden" name="document_date_source" value="">
+      <input type="hidden" name="date_received_source" value="">
       <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose or drop a document to upload">
         <p class="dropzone-primary">Drag and drop a document here</p>
         <p class="dropzone-secondary">or click to browse</p>
         <p class="dropzone-filename" id="dropzone-filename" hidden></p>
         <input type="file" name="file" id="dropzone-input" required class="dropzone-input">
       </div>
+      <p class="hint">
+        As soon as a file is chosen, FERChronos looks at its filename and
+        (when readable) its text — entirely on this machine, no network
+        call — and may suggest values below. Every suggestion stays fully
+        editable, and your own choice always wins.
+      </p>
 
       <h3 class="upload-details-heading">Document details (optional)</h3>
       <label>
@@ -80,6 +89,7 @@
           {% endfor %}
         </select>
       </label>
+      <p class="hint suggestion-hint" data-suggestion-note="document_type" hidden></p>
       <label>
         Source
         <input type="text" name="source" maxlength="300" placeholder="e.g. emailed by district">
@@ -93,6 +103,7 @@
         signed, or applies — not today's date. Leave blank if unknown;
         that's recorded as "unknown," not guessed.
       </p>
+      <p class="hint suggestion-hint" data-suggestion-note="document_date" hidden></p>
       <label>
         Date precision
         <select name="document_date_precision">
@@ -114,6 +125,8 @@
         <input type="date" name="date_received">
       </label>
       <p class="hint">Date Received: When you received this copy.</p>
+      <p class="hint suggestion-hint" data-suggestion-note="date_received" hidden></p>
+      <p class="hint" data-suggestion-note="informational" hidden></p>
       <label>
         Notes
         <textarea name="notes" rows="2"></textarea>
@@ -193,4 +206,5 @@
     {% endif %}
   </section>
   <script src="/static/dropzone.js"></script>
+  <script src="/static/document_preview.js"></script>
 {% endblock %}

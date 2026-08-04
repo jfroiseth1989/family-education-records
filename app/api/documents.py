@@ -7,19 +7,21 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_actor, get_db, get_vault
 from app.core.annotations.service import count_document_annotations
 from app.core.custody import verify_document_integrity, write_custody_event
-from app.core.document_dates import InvalidDateRangeError
+from app.core.document_dates import InvalidDateRangeError, set_document_date
+from app.core.document_date_suggestion import suggest_document_dates
 from app.core.document_type_suggestion import suggest_document_type
+from app.core.extraction.dispatcher import get_extractor, is_image_extension
 from app.core.extraction.service import extract_document
 from app.core.ingestion.service import DuplicateDocumentError, ingest_document
 from app.core.ingestion.versioning import VersionLinkError, link_as_new_version
@@ -27,7 +29,7 @@ from app.core.ocr.queue import enqueue_ocr_job
 from app.core.ocr.text import effective_text
 from app.core.tagging import list_case_tags
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document, DocumentDatePrecision, DocumentType
+from app.db.models import Case, Document, DocumentDatePrecision, DocumentDateSource, DocumentType
 
 router = APIRouter(tags=["documents"])
 
@@ -116,6 +118,19 @@ def _parse_document_date_form(
     return parsed_date, precision, parsed_range_end
 
 
+def _collect_field_provenance(**sources: str) -> dict[str, str]:
+    """Build the `field_provenance` map `ingest_document` records on the
+    `imported` custody event, from a set of hidden `<field>_source` form
+    values (see app/web/static/document_preview.js) -- one of "suggested",
+    "accepted", "edited", "manual", or "cleared" per field. A field whose
+    source wasn't submitted (blank -- e.g. an older client, or a form that
+    doesn't offer suggestions at all) is simply omitted rather than
+    recorded as an uninteresting default, matching `ingest_document`'s own
+    "None/empty omits provenance entirely" contract.
+    """
+    return {field: value for field, value in sources.items() if value.strip()}
+
+
 @router.post("/cases/{case_id}/documents")
 def upload_document(
     request: Request,
@@ -128,6 +143,9 @@ def upload_document(
     document_date_precision: str = Form("exact"),
     document_date_range_end: str = Form(""),
     date_received: str = Form(""),
+    document_type_source: str = Form(""),
+    document_date_source: str = Form(""),
+    date_received_source: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -143,6 +161,11 @@ def upload_document(
         document_date, document_date_precision, document_date_range_end
     )
     parsed_received = _parse_optional_date(date_received, "date received")
+    field_provenance = _collect_field_provenance(
+        document_type_id=document_type_source,
+        document_date=document_date_source,
+        date_received=date_received_source,
+    )
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -162,6 +185,7 @@ def upload_document(
                 document_date_precision=date_precision,
                 document_date_range_end=parsed_range_end,
                 date_received=parsed_received,
+                field_provenance=field_provenance,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
@@ -184,33 +208,63 @@ def upload_document(
     return RedirectResponse(url=f"/documents/{document.document_id}", status_code=303)
 
 
-def _compute_type_suggestion(
-    document: Document, document_types: list[DocumentType]
-) -> dict | None:
-    """Locally suggest a document type for `document`, or None.
+@router.post("/cases/{case_id}/documents/preview")
+def preview_document(
+    case_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """Local, pre-ingestion drop-zone preview: suggest a document type and
+    dates from the file's name and (for text-bearing formats) its native
+    extracted text -- filename-only for an image, since OCR is a
+    background job and deliberately never runs synchronously here (see
+    `_native_text_sample`'s docstring).
 
-    Only ever offered when the document has no type set yet (FERChronos
-    Step 5.6) -- an already-typed document is never second-guessed or
-    silently recategorized. Uses only the filename and the first few
-    pages' effective (extracted/OCR) text -- see
-    app/core/document_type_suggestion.py for the matching rules and the
-    standing no-AI/no-network guarantee. Resolves the suggested type name
-    to a concrete DocumentType row here (not in the suggestion module,
-    which is deliberately free of any DB dependency) so the template can
-    offer a one-click "accept" that posts a real type_id.
+    Writes nothing: no document row, no vault file, no hash, no custody
+    event. The temp file this spools to is always deleted before
+    returning, success or failure. This only ever returns a suggestion
+    for the browser to offer -- see app/web/static/document_preview.js --
+    never anything applied or persisted server-side; the real ingestion
+    route (`upload_document`, above) is what actually saves whatever the
+    human ultimately submits.
     """
-    if document.document_type_id is not None:
-        return None
+    _get_case_or_404(db, case_id)  # 404s for an unknown case; nothing else about it is used
 
-    text_sample = "\n".join(
-        text
-        for text in (
-            effective_text(page).text
-            for page in sorted(document.pages, key=lambda p: p.page_number)[:3]
-        )
-        if text
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="A file is required.")
+
+    temp_path = _save_upload_to_temp(file)
+    try:
+        text_sample = _native_text_sample(file.filename, temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    is_email = Path(file.filename).suffix.lower() == ".eml"
+    document_types = list(
+        db.scalars(select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)).all()
     )
-    suggestion = suggest_document_type(document.original_filename, text_sample)
+
+    payload = {
+        "document_type": _resolve_type_suggestion(file.filename, text_sample, document_types),
+        **_resolve_date_suggestions(text_sample, is_email=is_email),
+    }
+    return JSONResponse(payload)
+
+
+def _resolve_type_suggestion(
+    filename: str, text_sample: str, document_types: list[DocumentType]
+) -> dict | None:
+    """Locally suggest a document type from `filename`/`text_sample`, or
+    None -- shared by the post-ingestion suggestion on the document detail
+    page (`_compute_type_suggestion`, below) and the pre-ingestion preview
+    endpoint (`preview_document`). See app/core/document_type_suggestion.py
+    for the matching rules and the standing no-AI/no-network guarantee.
+    Resolves the suggested type name to a concrete DocumentType row here
+    (not in the suggestion module, which is deliberately free of any DB
+    dependency) so the caller can offer a one-click "accept" that posts a
+    real type_id.
+    """
+    suggestion = suggest_document_type(filename, text_sample)
     if suggestion is None:
         return None
 
@@ -224,8 +278,125 @@ def _compute_type_suggestion(
     return {
         "type_id": matched_type.type_id,
         "type_name": suggestion.type_name,
-        "matched_terms": suggestion.matched_terms,
+        "matched_terms": list(suggestion.matched_terms),
     }
+
+
+def _compute_type_suggestion(
+    document: Document, document_types: list[DocumentType]
+) -> dict | None:
+    """Locally suggest a document type for `document`, or None.
+
+    Only ever offered when the document has no type set yet (FERChronos
+    Step 5.6) -- an already-typed document is never second-guessed or
+    silently recategorized. Uses only the filename and the first few
+    pages' effective (extracted/OCR) text.
+    """
+    if document.document_type_id is not None:
+        return None
+
+    text_sample = "\n".join(
+        text
+        for text in (
+            effective_text(page).text
+            for page in sorted(document.pages, key=lambda p: p.page_number)[:3]
+        )
+        if text
+    )
+    return _resolve_type_suggestion(document.original_filename, text_sample, document_types)
+
+
+def _serialize_date_field(suggestion) -> dict | None:
+    if suggestion is None:
+        return None
+    return {
+        "value": suggestion.value.isoformat(),
+        "range_end": suggestion.range_end.isoformat() if suggestion.range_end else None,
+        "precision": suggestion.precision,
+        "matched_phrase": suggestion.matched_phrase,
+    }
+
+
+def _resolve_date_suggestions(text_sample: str, *, is_email: bool) -> dict:
+    """Locally suggest Document Date / Date Received values (and any
+    purely informational dates) from `text_sample` -- shared by the
+    pre-ingestion preview endpoint and, once OCR text becomes available,
+    the deferred suggestion shown on the document detail page. See
+    app/core/document_date_suggestion.py for the matching rules.
+    """
+    suggestions = suggest_document_dates(text_sample, is_email=is_email)
+    return {
+        "document_date": _serialize_date_field(suggestions.document_date),
+        "date_received": _serialize_date_field(suggestions.date_received),
+        "informational_dates": [
+            {"label": note.label, "value": note.value.isoformat(), "matched_phrase": note.matched_phrase}
+            for note in suggestions.informational
+        ],
+    }
+
+
+def _compute_date_suggestions(document: Document) -> dict | None:
+    """Locally suggest Document Date / Date Received values for `document`
+    from its extracted (native-or-OCR) text, or None.
+
+    Only offered while at least one of the two fields is still unset --
+    mirrors `_compute_type_suggestion`'s "don't second-guess an
+    already-answered field" gate. Once OCR completes for a scanned
+    document, this is what lets the deferred suggestion surface (which
+    already shows a document-type suggestion, FERChronos Step 5.6) also
+    offer dates -- same `suggest_document_dates` call the pre-ingestion
+    preview endpoint uses, just fed OCR-inclusive `effective_text()`
+    instead of native-only text.
+    """
+    if document.document_date is not None and document.date_received is not None:
+        return None
+
+    text_sample = "\n".join(
+        text
+        for text in (
+            effective_text(page).text
+            for page in sorted(document.pages, key=lambda p: p.page_number)[:3]
+        )
+        if text
+    )
+    if not text_sample:
+        return None
+
+    is_email = Path(document.original_filename).suffix.lower() == ".eml"
+    suggestions = _resolve_date_suggestions(text_sample, is_email=is_email)
+    if document.document_date is not None:
+        suggestions["document_date"] = None
+    if document.date_received is not None:
+        suggestions["date_received"] = None
+
+    if not suggestions["document_date"] and not suggestions["date_received"] and not suggestions["informational_dates"]:
+        return None
+    return suggestions
+
+
+def _native_text_sample(original_filename: str, temp_path: Path) -> str:
+    """Best-effort native (never OCR) text sample for a not-yet-ingested
+    file, for the pre-ingestion preview endpoint only -- OCR is a
+    background job (see app/jobs/worker.py) and deliberately never runs
+    synchronously in a request. An image file has no extractor at all
+    (`get_extractor` returns None) and always needs OCR, so preview falls
+    back to filename-only matching for it, same as any other case with no
+    usable native text; a scanned/image document's type and date
+    suggestions become available later, once OCR completes, via the
+    existing deferred-suggestion display on the document detail page.
+    Never raises -- a malformed/unparseable file simply yields no text
+    sample rather than failing the preview.
+    """
+    if is_image_extension(original_filename):
+        return ""
+    extractor = get_extractor(original_filename)
+    if extractor is None:
+        return ""
+    try:
+        result = extractor(temp_path)
+    except Exception:
+        return ""
+    return "\n".join(page.text or "" for page in result.pages[:3])
 
 
 @router.get("/documents/{document_id}", response_class=HTMLResponse)
@@ -262,6 +433,7 @@ def get_document(
         db.scalars(select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)).all()
     )
     type_suggestion = _compute_type_suggestion(document, document_types)
+    date_suggestions = _compute_date_suggestions(document)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -279,6 +451,7 @@ def get_document(
             "date_scan_result": date_scan,
             "document_types": document_types,
             "type_suggestion": type_suggestion,
+            "date_suggestions": date_suggestions,
         },
     )
 
@@ -325,6 +498,85 @@ def set_document_type(
                 "source": "suggested" if suggestion_source.strip() == "suggested" else "manual",
             },
         )
+        db.commit()
+
+    return RedirectResponse(url=f"/documents/{document.document_id}", status_code=303)
+
+
+@router.post("/documents/{document_id}/document-date")
+def set_document_date_route(
+    document_id: int,
+    document_date: str = Form(""),
+    document_date_precision: str = Form("exact"),
+    document_date_range_end: str = Form(""),
+    date_received: str = Form(""),
+    document_date_source: str = Form(""),
+    date_received_source: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
+) -> RedirectResponse:
+    """Set, correct, or clear a document's own date and/or date received
+    after ingestion.
+
+    Covers both accepting/overriding a deferred date suggestion (see
+    `_compute_date_suggestions`, offered once OCR text is available for a
+    document with no date yet — FERChronos document drop-zone auto-fill)
+    and simply correcting a date entered at ingestion time — mirrors
+    `set_document_type` above: always editable, never applied
+    automatically, and every actual change is logged to the custody log
+    recording whether it came from a suggestion or was entered manually.
+    A field that didn't actually change (same value resubmitted) writes no
+    event.
+    """
+    document = _get_document_or_404(db, document_id)
+
+    parsed_date, date_precision, parsed_range_end = _parse_document_date_form(
+        document_date, document_date_precision, document_date_range_end
+    )
+    parsed_received = _parse_optional_date(date_received, "date received")
+
+    current_date = document.document_date.date() if document.document_date else None
+    current_range_end = (
+        document.document_date_range_end.date() if document.document_date_range_end else None
+    )
+    current_received = document.date_received.date() if document.date_received else None
+
+    changes: dict[str, dict] = {}
+
+    if (
+        parsed_date != current_date
+        or parsed_range_end != current_range_end
+        or (parsed_date is not None and date_precision.value != document.document_date_precision)
+    ):
+        source = (
+            DocumentDateSource.EXTRACTED
+            if document_date_source.strip() == "suggested"
+            else DocumentDateSource.MANUAL
+        )
+        try:
+            set_document_date(
+                document, parsed_date, source=source, precision=date_precision, range_end=parsed_range_end
+            )
+        except InvalidDateRangeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        changes["document_date"] = {
+            "new_value": parsed_date.isoformat() if parsed_date else None,
+            "source": "suggested" if document_date_source.strip() == "suggested" else "manual",
+        }
+
+    if parsed_received != current_received:
+        document.date_received = (
+            datetime.combine(parsed_received, time.min, tzinfo=timezone.utc)
+            if parsed_received is not None
+            else None
+        )
+        changes["date_received"] = {
+            "new_value": parsed_received.isoformat() if parsed_received else None,
+            "source": "suggested" if date_received_source.strip() == "suggested" else "manual",
+        }
+
+    if changes:
+        write_custody_event(db, document, event_type="document_date_set", actor=actor, details=changes)
         db.commit()
 
     return RedirectResponse(url=f"/documents/{document.document_id}", status_code=303)
@@ -377,6 +629,8 @@ def upload_new_version(
     document_date_precision: str = Form("exact"),
     document_date_range_end: str = Form(""),
     date_received: str = Form(""),
+    document_date_source: str = Form(""),
+    date_received_source: str = Form(""),
     db: Session = Depends(get_db),
     vault: VaultLayout = Depends(get_vault),
     actor: str = Depends(get_actor),
@@ -404,6 +658,10 @@ def upload_new_version(
         document_date, document_date_precision, document_date_range_end
     )
     parsed_received = _parse_optional_date(date_received, "date received")
+    field_provenance = _collect_field_provenance(
+        document_date=document_date_source,
+        date_received=date_received_source,
+    )
 
     temp_path = _save_upload_to_temp(file)
     try:
@@ -422,6 +680,7 @@ def upload_new_version(
                 document_date_precision=date_precision,
                 document_date_range_end=parsed_range_end,
                 date_received=parsed_received,
+                field_provenance=field_provenance,
             )
         except DuplicateDocumentError as exc:
             db.rollback()
