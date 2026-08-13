@@ -92,6 +92,15 @@ class VaultLayout:
     def originals_dir(self, case_id: int, label: str) -> Path:
         return self.case_dir(case_id, label) / "originals"
 
+    def communications_dir(self, case_id: int, label: str) -> Path:
+        """Raw preserved `.eml` files and attachment bytes for one case's
+        imported communications (Communications Phase, see
+        docs/COMMUNICATIONS_PLAN.md) -- same read-only-on-write convention
+        as `originals_dir`, just a sibling directory rather than a
+        subdirectory of it, since a communication is not a `Document`.
+        """
+        return self.case_dir(case_id, label) / "communications"
+
 
 def init_vault(vault_path: Path) -> VaultLayout:
     """Create (or reconnect to) a vault at ``vault_path``.

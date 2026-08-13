@@ -1257,3 +1257,437 @@ class AppSession(Base):
     )
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --- Communications / Email Import Phase, Step 1 (schema only) -------------
+#
+# See docs/COMMUNICATIONS_PLAN.md for the full investigation and plan this
+# schema implements Step 1 of. No core module, service logic, or UI exists
+# yet for any of the tables below -- that is Steps 2+. This step exists
+# purely so the shape of the data is settled, reviewed, and migrated before
+# anything is built on top of it, matching how every prior phase's Step 1
+# (e.g. timeline_events, ocr_jobs, ai_observations) landed schema-first.
+#
+# Naming is deliberately "communication_*"/"communications", not "email_*":
+# `Communication.communication_type` is a discriminator column (fixed at
+# "email" for everything this phase produces) so a later communication type
+# (e.g. an imported SMS/chat export) can reuse this same table family
+# without a schema redesign -- see the plan's §1 "Communications
+# architecture" requirement.
+#
+# Every table here is purely additive -- no existing table gains, loses, or
+# changes a column. `Communication`/`CommunicationAttachment` follow the
+# same hashing/read-only-original/append-only-custody-ledger conventions as
+# `Document`/`DocumentCustodyEvent`; `CommunicationImportBatch`/
+# `CommunicationImportBatchItem` follow the same mutable job-lifecycle
+# pattern as `OcrJob` (process state, not evidentiary content, so updating
+# rows in place is correct here the same way it is there).
+
+
+class CommunicationAccount(Base):
+    """One connected mailbox (or, later, other communication source).
+
+    `credential_ref` is an opaque lookup key into the OS-native secure
+    credential store (see the Communications plan §3) -- e.g.
+    `"ferchronos-yahoo-<account_id>"` -- never the credential itself.
+    **No authentication secret of any kind is ever stored in this table,
+    or anywhere else in this database.** `auth_method` is `"app_password"`
+    for the only method this phase implements (a Yahoo-generated app
+    password over read-only IMAP, per the plan's §2 decision); the column
+    exists as a string, not a fixed enum, specifically so an `"oauth2"`
+    value can be added later *if* Yahoo approves that access -- without a
+    schema change -- while nothing here builds toward that speculatively.
+
+    Not a singleton -- multiple mailboxes (or, later, non-email accounts)
+    are supported by this shape from the start, even though Step 1 builds
+    no UI to add a second one yet.
+
+    Disconnecting (Communications plan §16/§4) clears the credential from
+    the OS store and sets `status`/`disconnected_at` here -- it never
+    deletes this row or any `Communication`/`CommunicationAttachment` row
+    that came from it, so previously imported data survives a disconnect.
+    """
+
+    __tablename__ = "communication_accounts"
+
+    account_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    email_address: Mapped[str] = mapped_column(String(320), nullable=False)
+    auth_method: Mapped[str] = mapped_column(String(20), nullable=False)
+    credential_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    # connected / disconnected
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="connected", server_default="connected"
+    )
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    communications: Mapped[list["Communication"]] = relationship(back_populates="account")
+
+
+class CommunicationThread(Base):
+    """A reconstructed conversation -- see the Communications plan §9.
+
+    Populated by the (not-yet-built, Step 4) threading algorithm from
+    Message-ID/In-Reply-To/References, with subject/participants/date as a
+    fallback only for messages missing those headers. Never merges or
+    rewrites the individual `Communication` rows it groups -- each
+    message's own provenance is untouched regardless of thread membership,
+    per the plan's explicit "never destroy individual-message provenance by
+    merging originals" requirement. `message_count`/`first_message_at`/
+    `last_message_at` are maintained by whatever service code creates/
+    extends a thread (Step 4) -- there is no trigger or constraint enforcing
+    them at the database level, consistent with every other derived/
+    maintained-by-application-logic field in this schema (e.g.
+    `DocumentVersionGroup.current_document_id`).
+    """
+
+    __tablename__ = "communication_threads"
+
+    thread_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.case_id"), nullable=True)
+    subject_normalized: Mapped[str | None] = mapped_column(String(998), nullable=True)
+    participant_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    case: Mapped["Case | None"] = relationship()
+    communications: Mapped[list["Communication"]] = relationship(back_populates="thread")
+
+
+class Communication(Base):
+    """One imported message -- the email-world analog of `Document`.
+
+    See the Communications plan §4/§5. `sha256_hash`/`stored_path`/
+    `file_size_bytes` describe the preserved raw RFC 822/MIME (`.eml`)
+    bytes, hashed and stored read-only exactly like a document original
+    (`app/core/files.py::compute_sha256`/`make_read_only`,
+    `app/core/vault.py`) -- never rewritten, never the FERChronos-generated
+    content itself. `body_text`/`body_html` are the *original* message
+    content as parsed from those bytes; any FERChronos-generated summary,
+    fact, or timeline suggestion derived from a communication lives in the
+    existing `ai_observations`/`verified_facts`/`timeline_events` tables,
+    linked back by FK, never merged into this row -- the same AI-inference
+    boundary already enforced for documents (`docs/PRIVACY_SECURITY.md`
+    §10) applies here unchanged, not as a new rule.
+
+    `account_id` is nullable specifically so manual `.eml` upload (Step 3)
+    never requires a connected mailbox -- the plan's explicit "keep manual
+    import completely independent of Yahoo configuration" requirement.
+    `case_id` is nullable until batch/individual assignment (plan §10).
+
+    `message_id_header` is the RFC 5322 Message-ID this row's dedup
+    primarily keys on (plan §7); `bcc_addresses` is populated only when a
+    BCC header is actually present in the source bytes -- never inferred.
+    `raw_headers` preserves the full original header block (as an ordered
+    list of `{name, value}` objects, so repeated header names, e.g.
+    multiple `Received:` lines, are not lost) for provenance, independent
+    of the five headers `app/core/extraction/email.py` already parses out
+    individually today.
+
+    Soft-delete only (`deleted_at`), matching `Document`/`Annotation`/
+    `VerifiedFact` -- a communication is never hard-deleted once other
+    rows (custody events, attachments, links) may reference it.
+    """
+
+    __tablename__ = "communications"
+    __table_args__ = (
+        # Partial unique index: only enforced when a Message-ID is
+        # actually present. SQLite treats every NULL as distinct, so
+        # messages with no Message-ID header (rare, but real) never
+        # collide here -- their dedup instead falls back to
+        # (account_id, sha256_hash), checked in application logic (plan
+        # §7), not a database constraint, since two accounts legitimately
+        # importing the same message-with-no-id is not itself an error.
+        Index(
+            "uq_communication_account_message_id",
+            "account_id",
+            "message_id_header",
+            unique=True,
+            sqlite_where=text("message_id_header IS NOT NULL"),
+        ),
+    )
+
+    communication_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    communication_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="email", server_default="email"
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communication_accounts.account_id"), nullable=True
+    )
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.case_id"), nullable=True)
+
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    from_address: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    from_display_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    to_addresses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    cc_addresses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Only ever populated when a BCC header is genuinely present in the
+    # source bytes (almost never, for a received message) -- see class
+    # docstring.
+    bcc_addresses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    message_id_header: Mapped[str | None] = mapped_column(String(998), nullable=True)
+    in_reply_to_header: Mapped[str | None] = mapped_column(String(998), nullable=True)
+    references_header: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    raw_headers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stored_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # IMAP provenance -- both null for a manually uploaded .eml, which has
+    # no mailbox of origin.
+    mailbox_uid: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    mailbox_folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    thread_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communication_threads.thread_id"), nullable=True
+    )
+
+    # manual_upload / imap_sync
+    import_method: Mapped[str] = mapped_column(String(20), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    imported_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    account: Mapped["CommunicationAccount | None"] = relationship(back_populates="communications")
+    case: Mapped["Case | None"] = relationship()
+    thread: Mapped["CommunicationThread | None"] = relationship(back_populates="communications")
+    attachments: Mapped[list["CommunicationAttachment"]] = relationship(
+        back_populates="communication", cascade="all, delete-orphan"
+    )
+    custody_events: Mapped[list["CommunicationCustodyEvent"]] = relationship(
+        back_populates="communication",
+        cascade="all, delete-orphan",
+        order_by="CommunicationCustodyEvent.event_timestamp",
+    )
+
+
+class CommunicationAttachment(Base):
+    """One attachment extracted from a `Communication`.
+
+    See the Communications plan §6/§8. Hashed and stored read-only exactly
+    like the parent message and like a `Document` original -- `sha256_hash`
+    is computed *before* any classification or promotion decision, which is
+    what makes duplicate-document detection possible without re-reading the
+    file (plan §8: if a `Document` with this hash already exists in the
+    target case, promoting this attachment links to that existing document
+    via `CommunicationDocumentLink` rather than calling `ingest_document`
+    again).
+
+    `is_educational_record_candidate`/`suggested_document_type_id` are
+    filled in by the (not-yet-built) local, deterministic classifier
+    extending `app/core/document_type_suggestion.py` -- advisory only,
+    same as every other suggestion in this application; never applied
+    automatically. `review_status` starts `"pending"` and is set by the
+    (not-yet-built) attachment review screen to `"added_to_documents"`,
+    `"excluded"`, or `"left_with_email"` -- an attachment is never silently
+    turned into a `Document` with no human decision recorded.
+    """
+
+    __tablename__ = "communication_attachments"
+
+    attachment_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    communication_id: Mapped[int] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=False
+    )
+
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    stored_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+    is_educational_record_candidate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    suggested_document_type_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_types.type_id"), nullable=True
+    )
+    # pending / added_to_documents / excluded / left_with_email
+    review_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    resulting_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    communication: Mapped["Communication"] = relationship(back_populates="attachments")
+    suggested_document_type: Mapped["DocumentType | None"] = relationship()
+    resulting_document: Mapped["Document | None"] = relationship()
+
+
+class CommunicationDocumentLink(Base):
+    """Provenance link between a `Document` and the communication/
+    attachment it was promoted from -- deliberately many-to-many in
+    effect, not a one-to-one pointer.
+
+    See the Communications plan §11: if the same IEP arrives as an
+    attachment on three separate emails, the *document* stays a single
+    preserved file/row, while three of these link rows record each
+    email's independent provenance (sender, date, import timestamp are all
+    reachable from here via `communication_id`/`communication_attachment_id`,
+    not duplicated onto this row). Append-only in practice -- there is no
+    code path (planned) that updates or deletes a link once created, same
+    spirit as `document_custody_events`, though this table itself is a
+    plain provenance record rather than a ledger of state transitions.
+    """
+
+    __tablename__ = "communication_document_links"
+
+    link_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.document_id"), nullable=False)
+    communication_id: Mapped[int] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=False
+    )
+    communication_attachment_id: Mapped[int] = mapped_column(
+        ForeignKey("communication_attachments.attachment_id"), nullable=False
+    )
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    document: Mapped["Document"] = relationship()
+    communication: Mapped["Communication"] = relationship()
+    communication_attachment: Mapped["CommunicationAttachment"] = relationship()
+
+
+class CommunicationCustodyEvent(Base):
+    """Append-only chain-of-custody ledger entry for one `Communication`.
+
+    Mirrors `DocumentCustodyEvent` exactly -- same snapshot-fields-at-event
+    convention, same "nothing in this application exposes an update or
+    delete path for this table" guarantee. Kept as its own table rather
+    than reusing `document_custody_events` since a `Communication` is not
+    a `Document` and forcing it through that table's `document_id` FK
+    would be a type mismatch, not a simplification.
+    """
+
+    __tablename__ = "communication_custody_events"
+
+    custody_event_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    communication_id: Mapped[int] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=False
+    )
+
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    sha256_hash_at_event: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_size_bytes_at_event: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_location_at_event: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    communication: Mapped["Communication"] = relationship(back_populates="custody_events")
+
+
+class CommunicationImportBatch(Base):
+    """One bulk-import run against a connected mailbox.
+
+    See the Communications plan §14. Unlike `Communication` and every
+    other evidentiary table above, this one is **not** append-only -- like
+    `OcrJob`, it tracks the lifecycle of a background process (a batch's
+    own progress), not evidentiary content, so updating its counters/status
+    in place as the (not-yet-built) import worker progresses is correct
+    here, not a deviation from this schema's usual conventions.
+    `search_criteria` snapshots the filters (date range, sender, subject,
+    keywords, folder, has-attachments, ...) the batch was run with, so a
+    completed or in-progress batch's scope stays reviewable after the fact.
+    """
+
+    __tablename__ = "communication_import_batches"
+
+    batch_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("communication_accounts.account_id"), nullable=False
+    )
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.case_id"), nullable=True)
+    search_criteria: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # pending / running / paused / completed / completed_with_errors /
+    # cancelled / failed
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    skipped_duplicate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    account: Mapped["CommunicationAccount"] = relationship()
+    case: Mapped["Case | None"] = relationship()
+    items: Mapped[list["CommunicationImportBatchItem"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class CommunicationImportBatchItem(Base):
+    """One matched mailbox message within a `CommunicationImportBatch` --
+    the unit of work that makes resumable/retry-safe bulk import possible.
+
+    See the Communications plan §14. On restart, the (not-yet-built)
+    import worker resumes by selecting `status == "pending"` items for an
+    in-progress batch and continuing -- already-`imported`/
+    `skipped_duplicate` items are never re-touched, so an interruption
+    never requires restarting the whole batch. `communication_id` is set
+    once this item results in a real `Communication` row (or left null for
+    `skipped_duplicate`/`failed`). Mutable in place, same justification as
+    `CommunicationImportBatch` itself.
+    """
+
+    __tablename__ = "communication_import_batch_items"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "mailbox_uid", name="uq_import_batch_item_uid"),
+    )
+
+    item_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("communication_import_batches.batch_id"), nullable=False
+    )
+    mailbox_uid: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    # pending / imported / skipped_duplicate / failed
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    communication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=True
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    batch: Mapped["CommunicationImportBatch"] = relationship(back_populates="items")
+    communication: Mapped["Communication | None"] = relationship()

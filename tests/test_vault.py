@@ -95,3 +95,19 @@ def test_init_vault_is_idempotent(tmp_path: Path):
     layout2 = init_vault(vault_path)
 
     assert layout2.metadata_path.read_text() == original_metadata
+
+
+def test_communications_dir_is_a_sibling_of_originals_dir(tmp_path: Path):
+    """Communications Phase (docs/COMMUNICATIONS_PLAN.md): raw preserved
+    email/attachment bytes live in their own directory under the case,
+    alongside -- never inside -- the existing document originals
+    directory, since a communication is not a Document.
+    """
+    layout = init_vault(tmp_path / "vault")
+
+    originals = layout.originals_dir(1, "Jane Doe")
+    communications = layout.communications_dir(1, "Jane Doe")
+
+    assert communications.parent == originals.parent
+    assert communications.name == "communications"
+    assert communications != originals
