@@ -23,7 +23,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 
-from app.api import account, annotations, auth, cases, documents, facts, ocr, search, tags, timeline
+from app.api import (
+    account,
+    annotations,
+    auth,
+    cases,
+    communications,
+    documents,
+    facts,
+    ocr,
+    search,
+    tags,
+    timeline,
+)
 from app.config import Settings, get_settings
 from app.core.auth.enforcement import AuthEnforcementMiddleware
 from app.core.auth.session import get_current_session
@@ -133,6 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(annotations.router)
     app.include_router(auth.router)
     app.include_router(cases.router)
+    app.include_router(communications.router)
     app.include_router(documents.router)
     app.include_router(facts.router)
     app.include_router(ocr.router)

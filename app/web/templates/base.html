@@ -9,6 +9,7 @@
 <body>
   <header class="app-header">
     <a class="app-title" href="/cases">FERChronos</a>
+    <a class="top-level-link{% if request.url.path.startswith('/communications') %} active{% endif %}" href="/communications">Communications</a>
     {% set active_student = case if case is defined else (document.case if document is defined else none) %}
     <details class="student-selector">
       <summary>

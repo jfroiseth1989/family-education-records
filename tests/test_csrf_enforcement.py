@@ -22,7 +22,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db.models import Annotation, Case, Citation, Document, DocumentPage, Tag, VerifiedFact
+from app.db.models import (
+    Annotation,
+    Case,
+    Citation,
+    CommunicationAccount,
+    Document,
+    DocumentPage,
+    Tag,
+    VerifiedFact,
+)
 
 
 def _csrf(client: TestClient) -> str:
@@ -416,6 +425,63 @@ def test_ocr_correction_valid_csrf_token_succeeds(client_no_csrf_header: TestCli
     with app.state.session_factory() as db:
         page_id = db.scalars(select(DocumentPage).where(DocumentPage.document_id == document_id)).one().page_id
         assert db.scalars(select(OcrCorrection).where(OcrCorrection.page_id == page_id)).first() is not None
+
+
+# --- Communications (Communications Phase Step 2) -----------------------
+
+
+def _seeded_account(app: FastAPI) -> int:
+    """Create a connected account row directly in the DB, bypassing the
+    connect route/keyring entirely -- disconnect is used as the
+    representative mutating route here since, unlike connect, it doesn't
+    depend on a working OS keyring backend being available in this test
+    environment.
+    """
+    with app.state.session_factory() as db:
+        account = CommunicationAccount(
+            provider="yahoo",
+            email_address="parent@yahoo.com",
+            auth_method="app_password",
+            credential_ref="yahoo-test-ref",
+            created_by="test-user",
+        )
+        db.add(account)
+        db.commit()
+        return account.account_id
+
+
+def test_disconnect_account_missing_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    account_id = _seeded_account(app)
+
+    response = client_no_csrf_header.post(f"/communications/{account_id}/disconnect", follow_redirects=False)
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.get(CommunicationAccount, account_id).status == "connected"
+
+
+def test_disconnect_account_invalid_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    account_id = _seeded_account(app)
+
+    response = client_no_csrf_header.post(
+        f"/communications/{account_id}/disconnect",
+        data={"csrf_token": "wrong-token"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.get(CommunicationAccount, account_id).status == "connected"
+
+
+def test_disconnect_account_valid_csrf_token_succeeds(client_no_csrf_header: TestClient, app: FastAPI):
+    account_id = _seeded_account(app)
+
+    response = _post_with_csrf(client_no_csrf_header, f"/communications/{account_id}/disconnect")
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        assert db.get(CommunicationAccount, account_id).status == "disconnected"
 
 
 # --- Cache headers on a CSRF rejection response -----------------------

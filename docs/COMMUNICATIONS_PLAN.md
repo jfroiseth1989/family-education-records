@@ -91,9 +91,16 @@ same read-only-on-write convention.
 
 **A — Foundations**
 1. ✅ Communications schema migration + models + vault layout addition.
-   No behavior, no UI. *(this step)*
-2. Secure credential module (OS keyring wrapper) + Connect/Disconnect
-   Yahoo UI. No IMAP calls yet.
+   No behavior, no UI.
+2. ✅ Secure credential module (`app/core/communications/credentials.py`,
+   an OS-keyring-only wrapper via the `keyring` package -- no fallback
+   storage, fails closed if no OS secret store is reachable) +
+   `app/core/communications/accounts.py` (connect/disconnect lifecycle)
+   + Connect/Disconnect Yahoo UI (`/communications`). Connecting only
+   ever saves the credential and account row -- no IMAP call, no sync,
+   no test login. Disconnecting deletes the credential and marks the
+   account disconnected without touching any imported data (there is
+   none yet to touch). *(this step)*
 
 **B — Manual upload & the shared content pipeline**
 3. Manual `.eml` upload → `communications`/`communication_attachments` +

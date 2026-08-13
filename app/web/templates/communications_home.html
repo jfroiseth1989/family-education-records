@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Communications — FERChronos{% endblock %}
+{% block content %}
+  <h1>Communications</h1>
+  <p class="hint">
+    Connect a mailbox to import educational-record emails in bulk, or use
+    manual .eml upload (a later step) -- manual upload never requires a
+    connected mailbox. FERChronos only ever reads mail from a connected
+    account; it never modifies, moves, or deletes anything in your
+    mailbox.
+  </p>
+
+  <section class="panel">
+    <h2>Connected accounts</h2>
+    {% if accounts %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Provider</th><th>Email</th><th>Status</th><th>Connected</th><th>Disconnected</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for account in accounts %}
+            <tr>
+              <td>{{ account.provider | capitalize }}</td>
+              <td>{{ account.email_address }}</td>
+              <td>
+                {% if account.status == "connected" %}
+                  <span class="status-badge status-current">connected</span>
+                {% else %}
+                  <span class="status-badge status-superseded">disconnected</span>
+                {% endif %}
+              </td>
+              <td>{{ account.connected_at }}</td>
+              <td>{{ account.disconnected_at or "—" }}</td>
+              <td>
+                {% if account.status == "connected" %}
+                  <form method="post" action="/communications/{{ account.account_id }}/disconnect" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+                    <button type="submit" class="btn-secondary">Disconnect</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No mailboxes connected yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Connect Yahoo</h2>
+    {% if connect_error %}
+      <p class="hint auth-error">{{ connect_error }}</p>
+    {% endif %}
+    <p class="hint">
+      FERChronos never asks for, and will never accept, your normal Yahoo
+      account password. Yahoo requires a separate <strong>app
+      password</strong> for mail apps like this one:
+    </p>
+    <ol class="hint">
+      <li>Sign in to Yahoo and go to <strong>Account Security</strong>.</li>
+      <li>Find <strong>"Generate app password"</strong> (sometimes listed
+        under "Other ways to sign in").</li>
+      <li>Give it a label like "FERChronos" so you can recognize and
+        revoke it later, independent of your real Yahoo password.</li>
+      <li>Paste the generated password below -- not your normal Yahoo
+        password.</li>
+    </ol>
+    <p class="hint">
+      This app password is saved only in this computer's own secure
+      credential store (Windows Credential Manager, macOS Keychain, or
+      your Linux keyring) -- never in FERChronos's database, never in a
+      log file, and it is not shown again once you submit it.
+    </p>
+    <form method="post" action="/communications/yahoo/connect">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+      <label>
+        Yahoo email address
+        <input type="email" name="email_address" required maxlength="320" placeholder="you@yahoo.com" autocomplete="off">
+      </label>
+      <label>
+        Yahoo app password
+        <input type="password" name="app_password" required maxlength="200" autocomplete="off">
+      </label>
+      <p class="hint">
+        Connecting only saves this credential securely -- it does not
+        contact Yahoo, test the login, or import any mail. That happens
+        later, only when you explicitly start an import.
+      </p>
+      <button type="submit">Connect Yahoo</button>
+    </form>
+  </section>
+{% endblock %}

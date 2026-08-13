@@ -79,6 +79,28 @@ a:hover {
   color: var(--accent);
 }
 
+/* Global, always-visible section link (Communications Phase Step 2) --
+   unlike .student-nav, not gated on an active student, since a
+   connected mailbox is not scoped to any one student. */
+.top-level-link {
+  font-weight: 600;
+  font-size: 0.92rem;
+  text-decoration: none;
+  color: var(--text-muted);
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+}
+
+.top-level-link:hover {
+  color: var(--accent);
+  background: var(--tint);
+}
+
+.top-level-link.active {
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
 .app-subtitle {
   font-size: 0.85rem;
   color: var(--text-muted);
