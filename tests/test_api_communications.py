@@ -260,3 +260,176 @@ def test_disconnect_marks_status_and_home_page_reflects_it(
     assert "disconnected" in home.text.lower()
     # No "Disconnect" button should remain for an already-disconnected account.
     assert home.text.count('action="/communications/%d/disconnect"' % account_id) == 0
+
+
+# --- manual .eml upload (Communications Phase Step 3) -----------------------
+
+
+def _create_case(client: TestClient, label: str = "Manual Upload Student") -> int:
+    response = client.post("/cases", data={"label": label}, follow_redirects=False)
+    return int(response.headers["location"].rsplit("/", 1)[-1])
+
+
+def _eml_bytes(message_id: str = "<msg-1@example.org>", subject: str = "IEP Meeting Notice") -> bytes:
+    return (
+        f"From: Amanda Wagner <amanda.wagner@district.example.org>\n"
+        f"To: parent@yahoo.com\n"
+        f"Subject: {subject}\n"
+        f"Date: Mon, 7 Mar 2022 14:30:00 -0500\n"
+        f"Message-ID: {message_id}\n"
+        f"\n"
+        f"Please see the attached notice.\n"
+    ).encode("utf-8")
+
+
+def test_upload_email_requires_no_connected_account(client: TestClient, app: FastAPI):
+    """docs/COMMUNICATIONS_PLAN.md §1 decision 3: manual .eml upload must
+    work with zero connected mailboxes -- this test never touches
+    keyring or CommunicationAccount at all.
+    """
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    with app.state.session_factory() as db:
+        assert db.query(CommunicationAccount).count() == 0
+
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", _eml_bytes(), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/communications/email/")
+
+    with app.state.session_factory() as db:
+        communication = db.scalars(select(Communication)).one()
+        assert communication.account_id is None
+        assert communication.case_id == case_id
+        assert communication.import_method == "manual_upload"
+
+
+def test_upload_email_missing_case_returns_400(client: TestClient):
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": ""},
+        files={"file": ("notice.eml", _eml_bytes(), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_upload_email_unknown_case_returns_400(client: TestClient):
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": "999999"},
+        files={"file": ("notice.eml", _eml_bytes(), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_upload_email_rejects_non_eml_extension(client: TestClient):
+    case_id = _create_case(client)
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.pdf", b"not an eml", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_upload_duplicate_email_returns_409_and_no_second_row(client: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", _eml_bytes(message_id="<dup@example.org>"), "message/rfc822")},
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice-again.eml", _eml_bytes(message_id="<dup@example.org>"), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 409
+    assert "already exists" in response.text.lower()
+
+    with app.state.session_factory() as db:
+        assert db.query(Communication).count() == 1
+
+
+def test_upload_email_original_bytes_preserved(client: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    content = _eml_bytes(subject="Exact bytes check")
+    upload_response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", content, "message/rfc822")},
+        follow_redirects=False,
+    )
+    communication_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        communication = db.get(Communication, communication_id)
+        stored_path = app.state.vault.root / communication.stored_path
+        assert stored_path.read_bytes() == content
+
+
+def test_communication_detail_page_shows_subject_body_and_attachments(client: TestClient):
+    case_id = _create_case(client)
+    upload_response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", _eml_bytes(subject="Detail Page Subject"), "message/rfc822")},
+        follow_redirects=False,
+    )
+    detail_url = upload_response.headers["location"]
+
+    response = client.get(detail_url)
+    assert response.status_code == 200
+    assert "Detail Page Subject" in response.text
+    assert "Please see the attached notice." in response.text
+    assert "No attachments on this message." in response.text
+
+
+def test_communication_detail_unknown_id_returns_404(client: TestClient):
+    response = client.get("/communications/email/999999")
+    assert response.status_code == 404
+
+
+def test_communications_home_lists_uploaded_email(client: TestClient):
+    case_id = _create_case(client)
+    client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", _eml_bytes(subject="Shows In List"), "message/rfc822")},
+        follow_redirects=False,
+    )
+
+    response = client.get("/communications")
+    assert "Shows In List" in response.text
+
+
+def test_upload_email_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.post(
+        "/communications/upload",
+        data={"case_id": "1"},
+        files={"file": ("notice.eml", _eml_bytes(), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"
+
+
+def test_communication_detail_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.get("/communications/email/1", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"

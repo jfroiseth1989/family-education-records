@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ communication.subject or "(no subject)" }} — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>{{ communication.subject or "(no subject)" }}</h1>
+
+  <section class="panel">
+    <h2>Message details</h2>
+    <table class="kv-table">
+      <tr><th>From</th><td>{{ communication.from_display_name or "" }} {% if communication.from_address %}&lt;{{ communication.from_address }}&gt;{% endif %}</td></tr>
+      <tr><th>To</th><td>{{ communication.to_addresses | join(', ') if communication.to_addresses else "—" }}</td></tr>
+      <tr><th>Cc</th><td>{{ communication.cc_addresses | join(', ') if communication.cc_addresses else "—" }}</td></tr>
+      {% if communication.bcc_addresses %}
+        <tr><th>Bcc</th><td>{{ communication.bcc_addresses | join(', ') }}</td></tr>
+      {% endif %}
+      <tr><th>Sent</th><td>{{ communication.sent_at or "Unknown" }}</td></tr>
+      <tr><th>Student</th><td>{{ communication.case.display_name if communication.case else "—" }}</td></tr>
+      <tr><th>Message-ID</th><td><code>{{ communication.message_id_header or "—" }}</code></td></tr>
+      <tr><th>Import method</th><td>{{ communication.import_method }}</td></tr>
+      <tr><th>Imported</th><td>{{ communication.imported_at }} by {{ communication.imported_by }}</td></tr>
+      <tr><th>SHA-256</th><td><code>{{ communication.sha256_hash }}</code></td></tr>
+      <tr><th>Storage path</th><td><code>{{ communication.stored_path }}</code></td></tr>
+    </table>
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Body</h2>
+    {% if communication.body_text %}
+      <pre class="message-body">{{ communication.body_text }}</pre>
+    {% elif communication.body_html %}
+      <p class="hint">This message has an HTML body only; showing extracted text is not yet supported here.</p>
+    {% else %}
+      <p class="empty-state">No message body was found.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Attachments ({{ attachments | length }})</h2>
+    {% if attachments %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Filename</th><th>Type</th><th>Size</th><th>Status</th><th>SHA-256</th></tr>
+        </thead>
+        <tbody>
+          {% for attachment in attachments %}
+            <tr>
+              <td>{{ attachment.filename }}</td>
+              <td>{{ attachment.mime_type or "—" }}</td>
+              <td>{{ attachment.size_bytes }} bytes</td>
+              <td>{{ attachment.review_status }}</td>
+              <td class="hash"><code>{{ attachment.sha256_hash[:12] }}…</code></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No attachments on this message.</p>
+    {% endif %}
+  </section>
+{% endblock %}

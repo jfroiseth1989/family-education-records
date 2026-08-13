@@ -79,6 +79,18 @@ a:hover {
   color: var(--accent);
 }
 
+/* Email body display (Communications Phase Step 3) -- preformatted but
+   wrapped, so long lines never force horizontal scroll on the page. */
+.message-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--tint);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: inherit;
+}
+
 /* Global, always-visible section link (Communications Phase Step 2) --
    unlike .student-nav, not gated on an active student, since a
    connected mailbox is not scoped to any one student. */

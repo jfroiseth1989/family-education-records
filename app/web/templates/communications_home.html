@@ -91,4 +91,62 @@
       <button type="submit">Connect Yahoo</button>
     </form>
   </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Import Email</h2>
+    <p class="hint">
+      Upload a saved email (<code>.eml</code>) for a student -- this
+      works whether or not a Yahoo account is connected above. The
+      original message file is preserved read-only, hashed, and never
+      modified, the same way an uploaded document is.
+    </p>
+    {% if upload_error %}
+      <p class="hint auth-error">{{ upload_error }}</p>
+    {% endif %}
+    {% if cases %}
+      <form method="post" action="/communications/upload" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <label>
+          Student
+          <select name="case_id" required>
+            <option value="">Select…</option>
+            {% for case in cases %}
+              <option value="{{ case.case_id }}">{{ case.display_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Email file (.eml)
+          <input type="file" name="file" accept=".eml" required>
+        </label>
+        <button type="submit">Upload Email</button>
+      </form>
+    {% else %}
+      <p class="empty-state">Add a student first before importing an email.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>All Communications</h2>
+    {% if communications %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Subject</th><th>From</th><th>Student</th><th>Sent</th><th>Imported</th></tr>
+        </thead>
+        <tbody>
+          {% for communication in communications %}
+            <tr>
+              <td><a href="/communications/email/{{ communication.communication_id }}">{{ communication.subject or "(no subject)" }}</a></td>
+              <td>{{ communication.from_display_name or communication.from_address or "—" }}</td>
+              <td>{{ communication.case.display_name if communication.case else "—" }}</td>
+              <td>{{ communication.sent_at or "—" }}</td>
+              <td>{{ communication.imported_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No communications imported yet.</p>
+    {% endif %}
+  </section>
 {% endblock %}

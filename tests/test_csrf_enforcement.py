@@ -484,6 +484,67 @@ def test_disconnect_account_valid_csrf_token_succeeds(client_no_csrf_header: Tes
         assert db.get(CommunicationAccount, account_id).status == "disconnected"
 
 
+# --- Communications: manual .eml upload (Communications Phase Step 3) ------
+
+
+def _eml_upload_files(message_id: str = "<csrf-test@example.org>"):
+    content = (
+        f"From: sender@example.org\nSubject: CSRF Test\nMessage-ID: {message_id}\n\nBody.\n"
+    ).encode("utf-8")
+    return {"file": ("notice.eml", content, "message/rfc822")}
+
+
+def test_upload_email_missing_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client_no_csrf_header)
+
+    response = client_no_csrf_header.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files=_eml_upload_files(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.query(Communication).count() == 0
+
+
+def test_upload_email_invalid_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client_no_csrf_header)
+
+    response = client_no_csrf_header.post(
+        "/communications/upload",
+        data={"case_id": str(case_id), "csrf_token": "wrong-token"},
+        files=_eml_upload_files(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.query(Communication).count() == 0
+
+
+def test_upload_email_valid_csrf_token_succeeds(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client_no_csrf_header)
+
+    response = client_no_csrf_header.post(
+        "/communications/upload",
+        data={"case_id": str(case_id), "csrf_token": _csrf(client_no_csrf_header)},
+        files=_eml_upload_files(),
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        assert db.query(Communication).count() == 1
+
+
 # --- Cache headers on a CSRF rejection response -----------------------
 
 

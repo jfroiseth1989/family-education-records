@@ -103,9 +103,24 @@ same read-only-on-write convention.
    none yet to touch). *(this step)*
 
 **B — Manual upload & the shared content pipeline**
-3. Manual `.eml` upload → `communications`/`communication_attachments` +
-   custody events, extending `app/core/extraction/email.py`. Basic
-   Communications nav + list views.
+3. ✅ Manual `.eml` upload → `communications`/`communication_attachments`
+   + custody events. `app/core/extraction/email.py` gained
+   `parse_message()`, a second entry point alongside the pre-existing
+   `extract()` (left untouched -- still serves the Document extraction
+   pipeline), returning a `ParsedEmailMessage` with full structured
+   headers/addresses/body-text-and-html-separately for `Communication`.
+   `app/core/communications/ingestion.py::import_eml_file()` mirrors
+   `ingest_document()`: hash, copy read-only, custody event, in one
+   transaction; attachments get the same treatment one level down,
+   always landing `review_status="pending"` (classification is Step 5).
+   Dedup: primarily `(account_id, message_id)`, falling back to
+   `(account_id, sha256_hash)` when no Message-ID is present -- checked
+   in application logic, not only the schema's partial unique index.
+   Upload UI lives on the existing `/communications` hub (a student
+   picker + file input) plus a new `/communications/email/{id}` detail
+   page and an "All Communications" list -- verified working with zero
+   Yahoo accounts connected, proving the independence requirement.
+   Thread reconstruction is still Step 4; nothing here groups messages.
 4. Thread reconstruction + thread view.
 5. Attachment educational-record detection (extended trigger coverage
    per §1 decision 2) + single-item attachment review + "Add to
