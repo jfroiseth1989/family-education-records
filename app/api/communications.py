@@ -39,9 +39,11 @@ from app.core.communications.promotion import (
     leave_attachment_with_email,
     promote_attachment_to_document,
 )
+from app.core.facts.service import CONFIDENCE_LABELS
 from app.core.indexing.communications_search import search_communications
 from app.core.vault import VaultLayout
 from app.db.models import (
+    AiObservation,
     Case,
     Communication,
     CommunicationAccount,
@@ -49,6 +51,7 @@ from app.db.models import (
     CommunicationDocumentLink,
     CommunicationThread,
     DocumentType,
+    VerifiedFact,
 )
 
 router = APIRouter(prefix="/communications", tags=["communications"])
@@ -236,6 +239,19 @@ def get_communication_detail(
         ).all()
     )
 
+    # Communications Phase Step 7: at most one AiObservation ever exists
+    # per communication (DB-enforced -- see the model's docstring), so a
+    # single lookup is always the whole picture; its resulting
+    # VerifiedFact (if accepted) is reached the same direct way.
+    timeline_observation = db.scalars(
+        select(AiObservation).where(AiObservation.communication_id == communication_id)
+    ).first()
+    timeline_fact = None
+    if timeline_observation is not None and timeline_observation.status == "accepted":
+        timeline_fact = db.scalars(
+            select(VerifiedFact).where(VerifiedFact.source_observation_id == timeline_observation.observation_id)
+        ).first()
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -244,6 +260,9 @@ def get_communication_detail(
             "communication": communication,
             "attachments": communication.attachments,
             "document_links": document_links,
+            "timeline_observation": timeline_observation,
+            "timeline_fact": timeline_fact,
+            "confidence_labels": sorted(CONFIDENCE_LABELS),
         },
     )
 

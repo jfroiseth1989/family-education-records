@@ -212,8 +212,42 @@ same read-only-on-write convention.
    `to_addresses`/`cc_addresses` columns for recipient/CC. New
    `/communications/search` route/page; result rows link to the existing
    communication detail page and, when threaded, the thread view.
-7. Timeline suggestions from communications (approve/edit/reject),
-   linked back to source email.
+7. ✅ Timeline suggestions from communications (approve/edit/reject),
+   linked back to source email. A `Communication` never automatically
+   becomes a `VerifiedFact`/`TimelineEvent` -- only a pending
+   `AiObservation`, reusing the exact same review lifecycle Document
+   text already goes through (Phase 3.5), not a parallel one.
+   Schema: one additive column each on `ai_observations`/`verified_facts`
+   (`communication_id`, nullable, UNIQUE on the observation side) --
+   `citations` (which requires a non-null `document_id` plus page/
+   offset/bounding-box fields) is untouched and unused for this path, on
+   purpose: a Communication has no citable page/offset span, and forcing
+   one through that table would be exactly the "fake Document
+   relationship" the plan warned against.
+   `app/core/communications/timeline_suggestions.py::generate_timeline_suggestion()`
+   builds the fixed candidate `Email received from <sender> regarding
+   "<subject>" on <date>.` from only `from_display_name`/`from_address`/
+   `subject`/`sent_at`/`received_at` -- never body text -- and only when
+   a reliable date exists (`received_at` preferred, `sent_at` fallback,
+   which one used recorded in the audit log); returns `None` (no
+   suggestion) otherwise, and is idempotent (at most one `AiObservation`
+   per communication, checked regardless of status, backed by the
+   schema's UNIQUE constraint). Runs automatically at import time.
+   `app/core/facts/service.py::promote_observation()`/`reject_observation()`
+   are reused completely unmodified for Approve/Edit+Approve/Reject
+   (aside from one additive line in `promote_observation()` copying
+   `communication_id` onto the resulting fact -- a no-op for every
+   Document-sourced observation). The candidate deliberately reuses the
+   existing "date" `FactType` (not a new one) specifically so a promoted
+   suggestion is immediately eligible to anchor a real `TimelineEvent`
+   through the existing, completely unmodified
+   `list_date_source_candidates()`/`create_timeline_event()` -- proving
+   Communication-sourced facts are fully interoperable with the existing
+   Timeline UI without a single change to `app/core/timeline/`.
+   `communication_detail.html` gained a Timeline Suggestion panel
+   (Pending/Accepted/Rejected status, inline Approve/Edit+Approve/Reject
+   posting to the existing Facts routes); `facts_review.html` gained a
+   "View Source Email" link wherever `communication_id` is set.
 8. Investigate and, if reliable, add `.msg`/other saved-email formats,
    each with its own parser rather than forcing an unreliable fit.
 

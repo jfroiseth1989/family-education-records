@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.communications.attachment_classification import classify_attachment, resolve_document_type_id
 from app.core.communications.custody import write_communication_custody_event
 from app.core.communications.thread_rebuild import rebuild_threads
+from app.core.communications.timeline_suggestions import generate_timeline_suggestion
 from app.core.extraction.email import parse_message
 from app.core.extraction.types import ExtractedAttachment
 from app.core.files import compute_sha256, copy_into_vault, make_read_only
@@ -142,6 +143,20 @@ def import_eml_file(
         _store_attachment(db, vault, case, communication, attachment)
 
     rebuild_threads(db)
+
+    # Communications Phase Step 7: a deterministic, pending-review
+    # timeline suggestion only -- never a verified fact or timeline
+    # event on its own. `actor` is left at its system default (matching
+    # app/core/facts/date_extraction.py's own convention: the *observation*
+    # was produced by the deterministic generator, not by whichever human
+    # happened to trigger this import -- reviewedby/reviewed_at are what
+    # later records a real human's decision). Safe to call
+    # unconditionally: produces nothing when the message has no reliable
+    # date, and is idempotent by construction (see
+    # generate_timeline_suggestion's docstring), so this can never
+    # accumulate a duplicate even if this function is somehow invoked
+    # twice for the same communication.
+    generate_timeline_suggestion(db, communication)
 
     return communication
 

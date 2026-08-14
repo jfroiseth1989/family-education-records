@@ -877,3 +877,144 @@ def test_communications_search_does_not_change_document_search_route(client: Tes
     response = client.get(f"/cases/{case_id}/search", params={"q": "Prior Written Notice"})
     assert response.status_code == 200
     assert "Results (1)" in response.text
+
+
+# --- timeline suggestions (Communications Phase Step 7) ---------------------
+
+
+def _upload_dated_eml(client: TestClient, case_id: int, *, message_id: str, subject: str = "IEP Meeting Notice") -> int:
+    content = (
+        f"From: Amanda Wagner <amanda.wagner@district.example.org>\n"
+        f"To: parent@yahoo.com\n"
+        f"Subject: {subject}\n"
+        f"Date: Mon, 7 Mar 2022 14:30:00 -0500\n"
+        f"Message-ID: {message_id}\n\n"
+        f"Body text.\n"
+    ).encode("utf-8")
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", content, "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return int(response.headers["location"].rsplit("/", 1)[-1])
+
+
+def test_communication_detail_shows_pending_timeline_suggestion(client: TestClient):
+    case_id = _create_case(client)
+    communication_id = _upload_dated_eml(client, case_id, message_id="<ts-1@x>")
+
+    response = client.get(f"/communications/email/{communication_id}")
+    assert response.status_code == 200
+    assert "Timeline Suggestion" in response.text
+    assert "Pending" in response.text
+    assert "Email received from Amanda Wagner" in response.text
+
+
+def test_communication_detail_shows_no_suggestion_when_no_date(client: TestClient):
+    case_id = _create_case(client)
+    content = (
+        b"From: sender@example.org\n"
+        b"To: parent@yahoo.com\n"
+        b"Subject: No Date Here\n"
+        b"Message-ID: <ts-nodate@x>\n\n"
+        b"Body.\n"
+    )
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", content, "message/rfc822")},
+        follow_redirects=False,
+    )
+    communication_id = int(response.headers["location"].rsplit("/", 1)[-1])
+
+    detail = client.get(f"/communications/email/{communication_id}")
+    assert "No timeline suggestion" in detail.text
+
+
+def test_approve_timeline_suggestion_from_communication_detail_page(client: TestClient, app: FastAPI):
+    from app.db.models import VerifiedFact
+
+    case_id = _create_case(client)
+    communication_id = _upload_dated_eml(client, case_id, message_id="<ts-2@x>")
+
+    response = client.post(
+        f"/cases/{case_id}/facts/observations/1/promote",
+        data={"confidence_label": "certain"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    detail = client.get(f"/communications/email/{communication_id}")
+    assert "Accepted" in detail.text
+
+    with app.state.session_factory() as db:
+        fact = db.query(VerifiedFact).filter_by(communication_id=communication_id).one()
+        assert fact.confidence_label == "certain"
+
+
+def test_reject_timeline_suggestion_from_communication_detail_page(client: TestClient):
+    case_id = _create_case(client)
+    communication_id = _upload_dated_eml(client, case_id, message_id="<ts-3@x>")
+
+    response = client.post(
+        f"/cases/{case_id}/facts/observations/1/reject",
+        data={"reason": "not needed"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    detail = client.get(f"/communications/email/{communication_id}")
+    assert "Rejected" in detail.text
+
+
+def test_facts_review_page_shows_view_source_email_link(client: TestClient):
+    case_id = _create_case(client)
+    communication_id = _upload_dated_eml(client, case_id, message_id="<ts-4@x>")
+
+    response = client.get(f"/cases/{case_id}/facts")
+    assert response.status_code == 200
+    assert f"/communications/email/{communication_id}" in response.text
+    assert "View Source Email" in response.text
+
+
+def test_edit_and_approve_via_facts_route_preserves_edited_statement(client: TestClient, app: FastAPI):
+    from app.db.models import VerifiedFact
+
+    case_id = _create_case(client)
+    _upload_dated_eml(client, case_id, message_id="<ts-5@x>")
+
+    client.post(
+        f"/cases/{case_id}/facts/observations/1/promote",
+        data={"confidence_label": "probable", "statement": "Edited statement text."},
+        follow_redirects=False,
+    )
+
+    with app.state.session_factory() as db:
+        fact = db.query(VerifiedFact).one()
+        assert fact.statement == "Edited statement text."
+        assert fact.confidence_label == "probable"
+
+
+def test_existing_document_facts_workflow_still_works_unchanged(client: TestClient, app: FastAPI):
+    """Communications Phase Step 7 must not weaken the Document-sourced
+    facts pipeline in any way.
+    """
+    from app.db.models import Document
+
+    case_id = _create_case(client)
+    upload_response = client.post(
+        f"/cases/{case_id}/documents",
+        data={},
+        files={"file": ("doc.txt", b"The meeting is scheduled for March 7, 2022.", "text/plain")},
+        follow_redirects=False,
+    )
+    document_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+
+    scan_response = client.post(f"/documents/{document_id}/facts/scan-dates", follow_redirects=False)
+    assert scan_response.status_code == 303
+
+    facts_page = client.get(f"/cases/{case_id}/facts")
+    assert facts_page.status_code == 200
+    assert "March" in facts_page.text or "2022" in facts_page.text

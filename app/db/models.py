@@ -888,9 +888,32 @@ class AiObservation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Communications Phase Step 7: set only for a suggestion generated
+    # from an imported email (app/core/communications/timeline_suggestions.py),
+    # null for every Document-sourced observation (v1's date-parser,
+    # above). Deliberately NOT routed through `citations` -- that table
+    # requires a non-null `document_id` plus page/offset/bounding-box
+    # fields that describe a position within a Document's extracted
+    # text, none of which apply to a deterministic metadata candidate
+    # built from a Communication's own structured fields (sender,
+    # subject, date). A Communication-sourced observation therefore has
+    # zero citations, which every citation-touching code path in
+    # app/core/facts/service.py already tolerates (an empty citation
+    # list is copied as an empty list, never rejected) -- this column is
+    # the only schema change that pipeline needed. `unique=True` is a
+    # DB-level backstop for "a Communication never accumulates more than
+    # one suggestion" (SQLite/standard SQL treats multiple NULLs as
+    # distinct, so this never blocks Document-sourced rows) -- the
+    # authoritative dedup check still lives in
+    # app/core/communications/timeline_suggestions.py, which checks
+    # regardless of status, not just this constraint.
+    communication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=True, unique=True
+    )
 
     case: Mapped["Case"] = relationship()
     fact_type: Mapped["FactType"] = relationship()
+    communication: Mapped["Communication | None"] = relationship()
     # Read-only convenience view over ai_observation_citations -- never
     # written through (viewonly=True); create_ai_observation() is the
     # only place a citation is ever attached, via that association table
@@ -958,6 +981,15 @@ class VerifiedFact(Base):
     source_observation_id: Mapped[int | None] = mapped_column(
         ForeignKey("ai_observations.observation_id"), nullable=True
     )
+    # Communications Phase Step 7: mirrors AiObservation.communication_id
+    # -- direct traceability back to the source email that does not rely
+    # on `source_observation_id` staying populated. Copied from
+    # `source_observation.communication_id` by `promote_observation()`
+    # when promoting a Communication-sourced observation; null for every
+    # Document-sourced fact and for a fact a human asserted directly.
+    communication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=True
+    )
 
     created_by: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -968,6 +1000,7 @@ class VerifiedFact(Base):
     case: Mapped["Case"] = relationship()
     fact_type: Mapped["FactType"] = relationship()
     source_observation: Mapped["AiObservation | None"] = relationship()
+    communication: Mapped["Communication | None"] = relationship()
     # Read-only convenience view over verified_fact_citations -- never
     # written through (viewonly=True); create_verified_fact() and
     # promote_observation() are the only places a citation is ever

@@ -69,6 +69,73 @@
   </section>
 
   <section class="panel panel-section-gap">
+    <h2>Timeline Suggestion</h2>
+    {% if not timeline_observation %}
+      <p class="empty-state">No timeline suggestion for this email — usually because it has no recorded sent or received date.</p>
+    {% else %}
+      <p class="hint">
+        A deterministic, local-only suggestion built only from this email's sender, subject, and date —
+        never body text, never AI-written. It never becomes part of the verified timeline until you decide.
+      </p>
+      <table class="kv-table">
+        <tr><th>Status</th><td>
+          {% if timeline_observation.status == "pending_review" %}
+            <span class="status-badge status-needs-ocr">Pending</span>
+          {% elif timeline_observation.status == "accepted" %}
+            <span class="status-badge status-current">Accepted</span>
+          {% else %}
+            <span class="status-badge status-superseded">Rejected</span>
+          {% endif %}
+        </td></tr>
+        <tr><th>Candidate statement</th><td>{{ timeline_observation.statement }}</td></tr>
+        {% if timeline_observation.reviewed_by %}
+          <tr><th>Reviewed</th><td>{{ timeline_observation.reviewed_at }} by {{ timeline_observation.reviewed_by }}</td></tr>
+        {% endif %}
+        {% if timeline_fact %}
+          <tr><th>Verified fact</th><td>{{ timeline_fact.statement }} (<a href="/cases/{{ communication.case_id }}/facts">view in Facts &amp; Observations</a>)</td></tr>
+        {% endif %}
+      </table>
+
+      {% if timeline_observation.status == "pending_review" %}
+        <details>
+          <summary>Approve (or edit and approve)</summary>
+          <form method="post" action="/cases/{{ communication.case_id }}/facts/observations/{{ timeline_observation.observation_id }}/promote">
+            <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+            <label>
+              Confidence
+              <select name="confidence_label" required>
+                {% for label in confidence_labels %}
+                  <option value="{{ label }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Statement (edit if needed)
+              <textarea name="statement" rows="2">{{ timeline_observation.statement }}</textarea>
+            </label>
+            <label>
+              Date (edit to correct, otherwise the date above is used)
+              <input type="date" name="fact_date" value="{{ timeline_observation.observed_date.strftime('%Y-%m-%d') if timeline_observation.observed_date else '' }}">
+            </label>
+            <button type="submit">Approve</button>
+          </form>
+        </details>
+        <details>
+          <summary>Reject</summary>
+          <form method="post" action="/cases/{{ communication.case_id }}/facts/observations/{{ timeline_observation.observation_id }}/reject">
+            <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+            <label>
+              Reason (optional)
+              <input type="text" name="reason" maxlength="500">
+            </label>
+            <button type="submit" class="btn-secondary">Reject</button>
+          </form>
+        </details>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
     <h2>Linked Documents ({{ document_links | length }})</h2>
     {% if document_links %}
       <table class="data-table">

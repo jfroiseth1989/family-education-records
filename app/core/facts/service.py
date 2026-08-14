@@ -31,6 +31,19 @@ Phase 4 Step 0 (docs/PHASE_4_IMPLEMENTATION_PLAN.md §1/§3) added
 `fact_type` is "date", so Phase 4's timeline can read a real date value
 instead of a human re-typing what's already in a fact's `statement`
 text.
+
+Communications Phase Step 7 added the one exception to "every fact-like
+record carries a required citation": a Communication-sourced observation
+(`app/core/communications/timeline_suggestions.py::generate_timeline_suggestion()`)
+is created directly, bypassing `create_ai_observation()`'s citation
+requirement entirely, since a Communication is not a Document and has no
+citable page/offset span -- its `AiObservation.communication_id` FK is
+an equally direct provenance anchor, just a structurally different one.
+`promote_observation()`/`reject_observation()` below are otherwise used
+completely unmodified for that observation type (aside from
+`promote_observation()` copying `communication_id` onto the resulting
+`VerifiedFact`, a no-op for every Document-sourced observation, whose
+`communication_id` is always null).
 """
 
 from __future__ import annotations
@@ -251,9 +264,12 @@ def promote_observation(
     observation's own statement unchanged. `fact_date` works the same way
     for the underlying date -- defaults to `observation.observed_date`,
     overridable if the reviewer needs to correct it (docs/PHASE_4_
-    IMPLEMENTATION_PLAN.md §3 Step 0). Raises ValueError if `observation`
-    isn't `pending_review` -- there is no re-promote or re-reject path.
-    Does not commit.
+    IMPLEMENTATION_PLAN.md §3 Step 0). `communication_id` is copied
+    unchanged from `observation` onto the new fact (Communications Phase
+    Step 7) -- always null for a Document-sourced observation, so this
+    is a no-op for every pre-existing caller. Raises ValueError if
+    `observation` isn't `pending_review` -- there is no re-promote or
+    re-reject path. Does not commit.
     """
     if observation.status != PENDING_REVIEW:
         raise ValueError(
@@ -282,6 +298,10 @@ def promote_observation(
         confidence_score=observation.confidence_score,
         fact_date=final_fact_date,
         source_observation_id=observation.observation_id,
+        # Communications Phase Step 7: direct traceability back to the
+        # source email, mirrored from the observation. Always None for
+        # every Document-sourced observation (no behavior change there).
+        communication_id=observation.communication_id,
         created_by=actor,
     )
     db.add(fact)

@@ -27,9 +27,13 @@
               <td>{{ "%.2f"|format(obs.confidence_score) }}</td>
               <td>{{ obs.method }}</td>
               <td>
-                {% for c in obs.citations %}
-                  <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ c.quoted_text }}&rdquo;</a>{% if not loop.last %}, {% endif %}
-                {% endfor %}
+                {% if obs.communication_id %}
+                  <a href="/communications/email/{{ obs.communication_id }}">View Source Email</a>
+                {% else %}
+                  {% for c in obs.citations %}
+                    <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ c.quoted_text }}&rdquo;</a>{% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                {% endif %}
               </td>
               <td>
                 <details>
@@ -94,9 +98,13 @@
               <td>{{ fact.confidence_label }}{% if fact.confidence_score is not none %} ({{ "%.2f"|format(fact.confidence_score) }}){% endif %}</td>
               <td>{% if fact.source_observation_id %}promoted from observation{% else %}direct{% endif %}</td>
               <td>
-                {% for c in fact.citations %}
-                  <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ c.quoted_text }}&rdquo;</a>{% if not loop.last %}, {% endif %}
-                {% endfor %}
+                {% if fact.communication_id %}
+                  <a href="/communications/email/{{ fact.communication_id }}">View Source Email</a>
+                {% else %}
+                  {% for c in fact.citations %}
+                    <a href="/documents/{{ c.document_id }}/view?page={{ c.page.page_number if c.page else 1 }}">&ldquo;{{ c.quoted_text }}&rdquo;</a>{% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                {% endif %}
               </td>
               <td>{{ fact.created_at }} by {{ fact.created_by }}</td>
               <td><a href="/cases/{{ case.case_id }}/timeline">Attach to event</a></td>
