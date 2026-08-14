@@ -89,14 +89,22 @@ def import_eml_file(
     source_file_path: Path,
     original_filename: str,
     actor: str,
+    import_method: str = "manual_upload",
+    custody_details: dict | None = None,
 ) -> Communication:
-    """Parse, hash, and copy `source_file_path` (a `.eml` file) into the
-    vault, registering it as a new `Communication` with its attachments.
+    """Parse, hash, and copy `source_file_path` (a `.eml` file, or one
+    message's raw RFC822 bytes extracted unmodified from an mbox archive
+    -- see app/core/communications/mbox_import.py, Communications Phase
+    Step 8) into the vault, registering it as a new `Communication` with
+    its attachments.
 
     Never modifies or deletes `source_file_path` -- opened for reading
     only. Raises `DuplicateCommunicationError` (without importing
-    anything) if an identical message already exists. Does not commit;
-    the caller controls the transaction boundary.
+    anything) if an identical message already exists. `import_method`
+    and `custody_details` are additive, optional overrides -- every
+    pre-Step-8 caller leaves them at their defaults and sees no change
+    in behavior. Does not commit; the caller controls the transaction
+    boundary.
     """
     parsed = parse_message(source_file_path)
     file_hash = compute_sha256(source_file_path)
@@ -131,13 +139,13 @@ def import_eml_file(
         sha256_hash=file_hash,
         stored_path=relative_stored_path,
         file_size_bytes=file_size,
-        import_method="manual_upload",
+        import_method=import_method,
         imported_by=actor,
     )
     db.add(communication)
     db.flush()  # assigns communication.communication_id
 
-    write_communication_custody_event(db, communication, event_type="imported", actor=actor)
+    write_communication_custody_event(db, communication, event_type="imported", actor=actor, details=custody_details)
 
     for attachment in parsed.attachments:
         _store_attachment(db, vault, case, communication, attachment)

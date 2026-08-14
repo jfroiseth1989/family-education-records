@@ -1491,7 +1491,13 @@ class Communication(Base):
         ForeignKey("communication_threads.thread_id"), nullable=True
     )
 
-    # manual_upload / imap_sync
+    # manual_upload / mbox_import / imap_sync -- see docs/COMMUNICATIONS_PLAN.md
+    # Step 8 for why "manual_upload" covers .eml specifically and
+    # "mbox_import" is its own value: an mbox-derived message's raw
+    # bytes are still the message's own genuine RFC822 original (mbox
+    # only concatenates real messages, it doesn't transform them), but
+    # provenance should still record that a human handed FERChronos an
+    # archive rather than one individually-saved file.
     import_method: Mapped[str] = mapped_column(String(20), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

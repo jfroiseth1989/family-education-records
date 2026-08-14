@@ -43,6 +43,24 @@ def _t(text: str, display: str | None = None) -> _Trigger:
     return _Trigger(pattern=r"\b" + re.escape(text) + r"\b", display=display or text)
 
 
+# A printed/exported email's classic header block ("From: ... Sent: ...
+# To: ... Subject: ...", in that order) -- built directly as a raw regex
+# rather than through _t() since it is a compound, multi-line signal, not
+# a single literal phrase. `[\s\S]{0,80}?` (rather than `.*?`) lets the
+# gap between each header line span real newlines -- `.` alone would not,
+# since matching runs without re.DOTALL -- while the small bound keeps it
+# from spanning unrelated later text and false-positiving on a document
+# that merely happens to contain all four words somewhere far apart.
+# Communications Phase Step 8: this is what lets a PDF export, print, or
+# screenshot of an email correctly get a "this looks like email
+# correspondence" suggestion without ever being imported/treated as a
+# true Communication -- see docs/COMMUNICATIONS_PLAN.md Step 8.
+_PRINTED_EMAIL_HEADER_BLOCK = _Trigger(
+    pattern=r"\bfrom:[\s\S]{0,80}?\bsent:[\s\S]{0,80}?\bto:[\s\S]{0,80}?\bsubject:",
+    display="From:/Sent:/To:/Subject: header block",
+)
+
+
 # Document type name -> the specific phrases/acronyms that suggest it,
 # each a multi-word phrase or a word-bounded acronym -- deliberately
 # never a single generic word like "plan" or "report" alone, so ordinary
@@ -156,6 +174,7 @@ _TYPE_TRIGGERS: tuple[tuple[str, tuple[_Trigger, ...]], ...] = (
             _t("letter to parent"),
             _t("letter to family"),
             _t("letter to guardian"),
+            _PRINTED_EMAIL_HEADER_BLOCK,
         ),
     ),
     (

@@ -33,6 +33,7 @@ from app.core.communications.attachment_metadata import (
 )
 from app.core.communications.credentials import KeyringUnavailableError
 from app.core.communications.ingestion import DuplicateCommunicationError, import_eml_file
+from app.core.communications.mbox_import import import_mbox_file
 from app.core.communications.promotion import (
     AttachmentNotPromotableError,
     exclude_attachment,
@@ -95,13 +96,22 @@ def _save_upload_to_temp(upload: UploadFile) -> Path:
         return Path(tmp.name)
 
 
-def _home_context(db: Session, *, connect_error: str | None = None, upload_error: str | None = None) -> dict:
+def _home_context(
+    db: Session,
+    *,
+    connect_error: str | None = None,
+    upload_error: str | None = None,
+    mbox_error: str | None = None,
+    mbox_message: str | None = None,
+) -> dict:
     return {
         "accounts": _list_accounts(db),
         "connect_error": connect_error,
         "communications": _list_recent_communications(db),
         "cases": _list_cases(db),
         "upload_error": upload_error,
+        "mbox_error": mbox_error,
+        "mbox_message": mbox_message,
     }
 
 
@@ -221,6 +231,61 @@ def post_upload_email(
         temp_path.unlink(missing_ok=True)
 
     return RedirectResponse(url=f"/communications/email/{communication.communication_id}", status_code=303)
+
+
+@router.post("/upload-mbox", response_class=HTMLResponse)
+def post_upload_mbox(
+    request: Request,
+    file: UploadFile,
+    case_id: str = Form(""),
+    db: Session = Depends(get_db),
+    vault: VaultLayout = Depends(get_vault),
+    actor: str = Depends(get_actor),
+) -> HTMLResponse:
+    """Manually import an `.mbox` archive for a chosen student, splitting
+    it into its individual real messages -- see
+    app/core/communications/mbox_import.py (Communications Phase Step 8).
+
+    An archive can contain many messages, so this redirects back to the
+    Communications home with a summary rather than to a single detail
+    page. A message that duplicates one already imported (in this
+    archive or a prior import) is skipped, not treated as a fatal error
+    for the whole batch.
+    """
+    if not case_id.strip() or not case_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="A student must be selected.")
+    case = db.get(Case, int(case_id))
+    if case is None:
+        raise HTTPException(status_code=400, detail="Selected student was not found.")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="An .mbox file is required.")
+    if Path(file.filename).suffix.lower() not in (".mbox", ".mbx"):
+        raise HTTPException(status_code=400, detail="Only .mbox files are supported for archive import.")
+
+    temp_path = _save_upload_to_temp(file)
+    try:
+        result = import_mbox_file(
+            db,
+            vault,
+            case,
+            source_file_path=temp_path,
+            original_filename=file.filename,
+            actor=actor,
+        )
+        db.commit()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    parts = [f"{len(result.imported)} message(s) imported"]
+    if result.duplicate_count:
+        parts.append(f"{result.duplicate_count} duplicate(s) skipped")
+    if result.unparseable_count:
+        parts.append(f"{result.unparseable_count} empty/unparseable entr(ies) skipped")
+    message = ", ".join(parts) + "."
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(request, "communications_home.html", _home_context(db, mbox_message=message))
 
 
 @router.get("/email/{communication_id}", response_class=HTMLResponse)

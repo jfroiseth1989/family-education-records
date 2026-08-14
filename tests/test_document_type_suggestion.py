@@ -224,3 +224,54 @@ def test_no_network_ai_cloud_or_llm_code_in_suggestion_module():
     lowered = source.lower()
     offenders = [s for s in forbidden_substrings if s.lower() in lowered]
     assert offenders == [], f"Forbidden references found in suggestion module: {offenders}"
+
+
+# --- printed/exported-email header block (Communications Phase Step 8) ------
+
+
+def test_printed_email_header_block_suggests_correspondence():
+    text = (
+        "From: Amanda Wagner <amanda.wagner@district.example.org>\n"
+        "Sent: Monday, March 7, 2022 2:30 PM\n"
+        "To: Parent <parent@yahoo.com>\n"
+        "Subject: Question about pickup time\n"
+        "\n"
+        "Please let me know if the schedule changes."
+    )
+    result = suggest_document_type("Printed Email.pdf", text_sample=text)
+    assert result is not None
+    assert result.type_name == "Correspondence"
+    assert "From:/Sent:/To:/Subject: header block" in result.matched_terms
+
+
+def test_printed_email_header_block_is_case_insensitive_and_order_sensitive_gap():
+    text = "from:  a@b.com\nsent:  today\nto:  c@d.com\nsubject:  hello"
+    result = suggest_document_type("scan.pdf", text_sample=text)
+    assert result is not None
+    assert result.type_name == "Correspondence"
+
+
+def test_headers_out_of_order_do_not_suggest_correspondence():
+    """The trigger requires From/Sent/To/Subject in that specific order --
+    a document that merely happens to contain all four words scattered in
+    a different order must not false-positive."""
+    text = "Subject: hello\nTo: c@d.com\nSent: today\nFrom: a@b.com\n"
+    result = suggest_document_type("scan.pdf", text_sample=text)
+    assert result is None
+
+
+def test_headers_far_apart_do_not_suggest_correspondence():
+    """The bounded gap between header lines keeps this from matching a
+    long document that merely mentions all four words far apart in
+    unrelated prose."""
+    filler = "unrelated text " * 20
+    text = f"From: a@b.com\n{filler}Sent: today\n{filler}To: c@d.com\n{filler}Subject: hello"
+    result = suggest_document_type("scan.pdf", text_sample=text)
+    assert result is None
+
+
+def test_ordinary_correspondence_word_still_matches_without_header_block():
+    result = suggest_document_type("letter.pdf", text_sample="This is correspondence between the family and school.")
+    assert result is not None
+    assert result.type_name == "Correspondence"
+    assert "correspondence" in result.matched_terms

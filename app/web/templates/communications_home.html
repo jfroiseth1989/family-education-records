@@ -127,6 +127,45 @@
   </section>
 
   <section class="panel panel-section-gap">
+    <h2>Import Email Archive (.mbox)</h2>
+    <p class="hint">
+      Upload an mbox archive exported from a mail client (<code>.mbox</code>
+      or <code>.mbx</code>) for a student. Each message inside the archive
+      is its own genuine original -- FERChronos splits the archive apart
+      and imports every message the same way as a single <code>.eml</code>
+      upload, preserving each one read-only and hashed. A message that
+      duplicates one already in FERChronos is skipped, not re-imported.
+    </p>
+    {% if mbox_error %}
+      <p class="hint auth-error">{{ mbox_error }}</p>
+    {% endif %}
+    {% if mbox_message %}
+      <p class="hint">{{ mbox_message }}</p>
+    {% endif %}
+    {% if cases %}
+      <form method="post" action="/communications/upload-mbox" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <label>
+          Student
+          <select name="case_id" required>
+            <option value="">Select…</option>
+            {% for case in cases %}
+              <option value="{{ case.case_id }}">{{ case.display_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Email archive (.mbox)
+          <input type="file" name="file" accept=".mbox,.mbx" required>
+        </label>
+        <button type="submit">Upload Archive</button>
+      </form>
+    {% else %}
+      <p class="empty-state">Add a student first before importing an email archive.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
     <h2>All Communications</h2>
     <p class="hint">
       <a href="/communications/threads">View Email Threads &rarr;</a>

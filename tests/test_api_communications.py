@@ -383,6 +383,89 @@ def test_upload_email_original_bytes_preserved(client: TestClient, app: FastAPI)
         assert stored_path.read_bytes() == content
 
 
+# --- manual .mbox archive upload (Communications Phase Step 8) --------------
+
+
+def _mbox_bytes(messages: list[bytes]) -> bytes:
+    parts = []
+    for msg in messages:
+        parts.append(b"From sender@example.org Mon Mar  7 14:30:00 2022\n" + msg + b"\n")
+    return b"".join(parts)
+
+
+def test_upload_mbox_imports_each_message_and_redirects_home(client: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    archive = _mbox_bytes(
+        [
+            _eml_bytes(message_id="<one@example.org>", subject="First Notice"),
+            _eml_bytes(message_id="<two@example.org>", subject="Second Notice"),
+        ]
+    )
+
+    response = client.post(
+        "/communications/upload-mbox",
+        data={"case_id": str(case_id)},
+        files={"file": ("archive.mbox", archive, "application/mbox")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    assert "2 message(s) imported" in response.text
+
+    with app.state.session_factory() as db:
+        communications = db.scalars(select(Communication)).all()
+        assert len(communications) == 2
+        assert all(c.import_method == "mbox_import" for c in communications)
+        assert all(c.case_id == case_id for c in communications)
+
+
+def test_upload_mbox_missing_case_returns_400(client: TestClient):
+    response = client.post(
+        "/communications/upload-mbox",
+        data={"case_id": ""},
+        files={"file": ("archive.mbox", _mbox_bytes([_eml_bytes()]), "application/mbox")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_upload_mbox_rejects_non_mbox_extension(client: TestClient):
+    case_id = _create_case(client)
+    response = client.post(
+        "/communications/upload-mbox",
+        data={"case_id": str(case_id)},
+        files={"file": ("archive.eml", _mbox_bytes([_eml_bytes()]), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+
+
+def test_upload_mbox_reports_duplicates_without_failing(client: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    archive = _mbox_bytes([_eml_bytes(message_id="<dup@example.org>")])
+
+    client.post(
+        "/communications/upload-mbox",
+        data={"case_id": str(case_id)},
+        files={"file": ("archive.mbox", archive, "application/mbox")},
+        follow_redirects=False,
+    )
+    response = client.post(
+        "/communications/upload-mbox",
+        data={"case_id": str(case_id)},
+        files={"file": ("archive.mbox", archive, "application/mbox")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    assert "1 duplicate(s) skipped" in response.text
+
+    with app.state.session_factory() as db:
+        assert db.query(Communication).count() == 1
+
+
 def test_communication_detail_page_shows_subject_body_and_attachments(client: TestClient):
     case_id = _create_case(client)
     upload_response = client.post(

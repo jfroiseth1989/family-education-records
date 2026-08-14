@@ -248,8 +248,109 @@ same read-only-on-write convention.
    (Pending/Accepted/Rejected status, inline Approve/Edit+Approve/Reject
    posting to the existing Facts routes); `facts_review.html` gained a
    "View Source Email" link wherever `communication_id` is set.
-8. Investigate and, if reliable, add `.msg`/other saved-email formats,
-   each with its own parser rather than forcing an unreliable fit.
+8. ✅ Investigated `.msg` and other saved-email formats; implemented only
+   the one that reliably clears the evidence/provenance bar (`.mbox`).
+
+   **`.msg` (Outlook/MAPI) -- investigated, not implemented.** Two
+   candidate Python libraries were evaluated:
+   - `extract-msg`: feature-complete (From/To/CC/BCC, Subject, sent
+     date, Message-ID, In-Reply-To/References when present, plain-text
+     body, HTML body, raw transport headers when preserved by the
+     original `.msg`, attachments as original bytes), actively
+     maintained, pure Python (no native/system dependency). Disqualified
+     anyway: it is **GPL-3.0-licensed**. FERChronos is described in its
+     own `pyproject.toml` as a private, local-first application intended
+     for eventual distribution to non-technical families -- bundling a
+     GPL-3.0 dependency would put the *entire distributed application*
+     under GPL-3.0's copyleft/source-disclosure obligations, a real,
+     hard-to-reverse legal/business consequence, not a coding one. This
+     alone is disqualifying regardless of field-coverage completeness.
+   - `python-oxmsg`: properly MIT-licensed (shares an author with the
+     already-depended-on `python-docx`), but confirmed pre-1.0/alpha via
+     its own README, with To/CC/BCC, HTML body, raw headers, and
+     Message-ID extraction not yet documented as supported. Not reliable
+     enough today to trust for evidentiary provenance.
+
+   Per this step's own explicit permission ("if it cannot [meet the
+   requirements reliably], document the limitation and do not implement
+   a compromised parser just to check the feature box"), `.msg` import
+   is **not implemented**. This is a reasoned, written decision, not an
+   oversight -- revisit if `python-oxmsg` matures to 1.0 with full field
+   coverage, or if FERChronos's distribution model changes such that
+   GPL-3.0 is no longer a blocker.
+
+   **Other formats -- classified, not all implemented:**
+   - `.mbox` -- **implemented** (see below). Python stdlib-only
+     (`mailbox.mbox`), no licensing risk, no native dependency; each
+     contained message is a genuine, unmodified RFC822 original (an
+     mbox archive only concatenates real messages -- it does not
+     transform, normalize, or reconstruct any one of them), so the
+     entire existing, already-battle-tested `.eml` pipeline applies
+     without a second parser.
+   - `.mbx` -- **unsupported for now.** Non-standardized (multiple
+     incompatible legacy formats have used this extension), no reliable
+     actively-maintained library exists. The upload route accepts the
+     `.mbx` extension alongside `.mbox` only because some mail clients
+     export true mbox-format archives under a `.mbx` name; this is not
+     support for the genuinely different legacy `.mbx` formats.
+   - `.oft` -- **unsupported / not applicable.** An Outlook *template*
+     file, not an actual sent/received message -- it fails the
+     Communications model's basic premise (a real transmitted
+     communication) regardless of parser availability.
+   - `.emlx` -- **unsupported for now.** Apple Mail's internal per-
+     message storage format (an RFC822 body plus an XML plist trailer);
+     technically parseable with custom handling, but not a format users
+     deliberately "Save As" or export -- it is Mail.app's own internal
+     storage, encountered only by reaching into `~/Library/Mail`
+     directly. Low practical value relative to the added parsing
+     complexity; revisit only if a real user need for it surfaces.
+
+   **`.mbox` import -- implemented.**
+   `app/core/communications/mbox_import.py::import_mbox_file()` opens
+   the archive read-only via stdlib `mailbox.mbox()`, extracts each
+   entry's raw RFC822 bytes unchanged to a throwaway temp file, and
+   calls `import_eml_file()` once per message -- zero new parsing logic.
+   `import_eml_file()` gained two additive, defaulted parameters
+   (`import_method="manual_upload"`, `custody_details=None`) so every
+   pre-Step-8 caller is unaffected; `.mbox`-derived messages pass
+   `import_method="mbox_import"` (a new, distinct value from
+   `"manual_upload"` -- the message bytes are exactly as genuine as a
+   individually-saved `.eml`, but provenance should still record that a
+   human handed FERChronos an archive rather than one file) and
+   `custody_details` recording the source archive's filename and its own
+   SHA-256 hash. A message that duplicates one already imported (within
+   the same archive or a prior import) is skipped via the existing
+   `DuplicateCommunicationError` path rather than aborting the whole
+   batch, so the same archive can safely be re-imported after new
+   messages are appended to it. New `/communications/upload-mbox` route
+   (redirects to the Communications home with an imported/duplicate/
+   unparseable-entry count summary, since an archive can contain many
+   messages and there is no single detail page to redirect to) and a
+   matching upload form on `communications_home.html`, alongside the
+   existing `.eml` form.
+
+   **PDF/screenshot emails -- deterministic "looks like correspondence"
+   suggestion only, per the standing decision.** A PDF export, print, or
+   screenshot of an email remains a normal Document, never a
+   `communications` row -- it is not an RFC822/MAPI original.
+   `app/core/document_type_suggestion.py` gained one new compound
+   trigger on the existing "Correspondence" type: a raw (non-`_t()`)
+   regex detecting the classic printed/exported header block --
+   `From:` ... `Sent:` ... `To:` ... `Subject:` co-occurring in that
+   order within a bounded gap (so unrelated later text mentioning all
+   four words can't false-positive, and a different order doesn't
+   match). This only ever produces the existing, already-advisory
+   Correspondence suggestion on a normal Document -- it does not import
+   anything as a Communication and does not otherwise change any
+   PDF/image ingestion behavior.
+
+   Threading was not weakened to accommodate any of this: `.mbox`
+   messages carrying real Message-ID/In-Reply-To/References headers
+   thread through the normal header-based algorithm exactly like `.eml`;
+   messages without them fall back to the same conservative headerless
+   matching every other headerless message already uses. Nothing
+   fabricates a header that was not actually present in the original
+   message.
 
 **C — Automatic Yahoo import**
 9. Read-only IMAP connectivity (app-password auth) + folder listing +
