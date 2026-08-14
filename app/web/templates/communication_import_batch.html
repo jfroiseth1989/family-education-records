@@ -34,6 +34,9 @@
 
     <p>
       <a href="/communications/import-batches/{{ batch.batch_id }}">Refresh</a>
+      {% if batch.imported_count > 0 %}
+        &middot; <a href="/communications/attachments/review?batch_id={{ batch.batch_id }}">Review Attachments &rarr;</a>
+      {% endif %}
     </p>
 
     {% if batch.status in ("pending", "running") %}

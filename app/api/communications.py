@@ -51,6 +51,15 @@ from app.core.communications.imap_client import (
     ImapSearchCriteria,
     ImapTimeoutError,
 )
+from app.core.communications.bulk_attachment_review import (
+    AttachmentReviewFilters,
+    bulk_add_to_documents,
+    bulk_exclude,
+    bulk_leave_with_email,
+    list_recognized_pending_attachments,
+    list_review_attachments,
+    preview_bulk_promotion,
+)
 from app.core.communications.imap_service import open_connection
 from app.core.communications.import_batches import (
     BatchValidationError,
@@ -983,4 +992,304 @@ def search_communications_route(
             "results": results,
             "searched": searched,
         },
+    )
+
+
+# --- bulk attachment review (Communications Phase Step 11) -----------------
+#
+# Everything below is orchestration only -- app/core/communications/
+# bulk_attachment_review.py never classifies, never computes metadata
+# suggestions, and never decides duplicate-vs-new-Document on its own; it
+# calls the exact same Step 5 per-item functions
+# (promote_attachment_to_document/exclude_attachment/
+# leave_attachment_with_email) these routes' single-attachment
+# counterparts above already use. No Yahoo/IMAP network call is possible
+# from any route in this section -- everything needed was already made
+# local by Step 10's import.
+
+
+def _int_or_none(raw: str) -> int | None:
+    return int(raw) if raw.strip().isdigit() else None
+
+
+def _parse_review_filters(
+    db: Session,
+    *,
+    batch_id: str,
+    case_id: str,
+    document_type_id: str,
+    status: str,
+    candidate: str,
+    sender: str,
+    subject: str,
+    date_from: str,
+    date_to: str,
+) -> AttachmentReviewFilters:
+    return AttachmentReviewFilters(
+        batch_id=_int_or_none(batch_id),
+        case_id=_int_or_none(case_id),
+        document_type_id=_int_or_none(document_type_id),
+        review_status=status,
+        candidate_filter=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=_parse_optional_date(date_from.strip(), "date_from"),
+        date_to=_parse_optional_date(date_to.strip(), "date_to"),
+    )
+
+
+def _resolve_attachments(db: Session, ids: list[str]) -> list[CommunicationAttachment]:
+    resolved = []
+    for raw in ids:
+        parsed = _int_or_none(raw)
+        if parsed is None:
+            continue
+        attachment = db.get(CommunicationAttachment, parsed)
+        if attachment is not None:
+            resolved.append(attachment)
+    return resolved
+
+
+def _bulk_review_context(
+    db: Session,
+    filters: AttachmentReviewFilters,
+    *,
+    bulk_result=None,
+    add_all_preview=None,
+) -> dict:
+    rows = list_review_attachments(db, filters)
+    document_types = list(
+        db.scalars(select(DocumentType).where(DocumentType.is_active).order_by(DocumentType.name)).all()
+    )
+    return {
+        "rows": rows,
+        "filters": filters,
+        "cases": _list_cases(db),
+        "document_types": document_types,
+        "bulk_result": bulk_result,
+        "add_all_preview": add_all_preview,
+    }
+
+
+@router.get("/attachments/review", response_class=HTMLResponse)
+def get_bulk_attachment_review(
+    request: Request,
+    batch_id: str = Query(""),
+    case_id: str = Query(""),
+    document_type_id: str = Query(""),
+    status: str = Query("pending"),
+    candidate: str = Query(""),
+    sender: str = Query(""),
+    subject: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Bulk attachment review list -- defaults to every `pending`
+    attachment across all accounts/students, narrowed by whichever
+    filters are given. Read-only: never touches an attachment's review
+    state, never contacts Yahoo.
+    """
+    filters = _parse_review_filters(
+        db,
+        batch_id=batch_id,
+        case_id=case_id,
+        document_type_id=document_type_id,
+        status=status,
+        candidate=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request, "communication_bulk_attachment_review.html", _bulk_review_context(db, filters)
+    )
+
+
+@router.post("/attachments/review/add-selected", response_class=HTMLResponse)
+def post_bulk_add_selected(
+    request: Request,
+    attachment_id: list[str] = Form([]),
+    batch_id: str = Form(""),
+    case_id: str = Form(""),
+    document_type_id: str = Form(""),
+    status: str = Form("pending"),
+    candidate: str = Form(""),
+    sender: str = Form(""),
+    subject: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    db: Session = Depends(get_db),
+    vault: VaultLayout = Depends(get_vault),
+    actor: str = Depends(get_actor),
+) -> HTMLResponse:
+    """Add every selected attachment to Documents, each independently --
+    a duplicate is linked rather than failed, and one attachment's real
+    failure never blocks or undoes any other. Uses each attachment's own
+    Step 5 suggested metadata; per-item metadata edits happen on the
+    existing single-attachment review page (linked from each row), not
+    here.
+    """
+    filters = _parse_review_filters(
+        db,
+        batch_id=batch_id,
+        case_id=case_id,
+        document_type_id=document_type_id,
+        status=status,
+        candidate=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    attachments = _resolve_attachments(db, attachment_id)
+    summary = bulk_add_to_documents(db, vault, attachments, actor)
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communication_bulk_attachment_review.html",
+        _bulk_review_context(db, filters, bulk_result=summary),
+    )
+
+
+@router.post("/attachments/review/add-all-recognized", response_class=HTMLResponse)
+def post_bulk_add_all_recognized(
+    request: Request,
+    confirmed: str = Form(""),
+    batch_id: str = Form(""),
+    case_id: str = Form(""),
+    document_type_id: str = Form(""),
+    status: str = Form("pending"),
+    candidate: str = Form(""),
+    sender: str = Form(""),
+    subject: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    db: Session = Depends(get_db),
+    vault: VaultLayout = Depends(get_vault),
+    actor: str = Depends(get_actor),
+) -> HTMLResponse:
+    """"Add all recognized" -- scoped to `batch_id`/`case_id` (the two
+    groupings Step 11 asks for), always meaning exactly "every `pending`
+    attachment with an unambiguous classifier suggestion" regardless of
+    whatever narrower display filters (sender/subject/date/suggested
+    type) the page happened to be showing.
+
+    Two-phase, and the candidate set is always recomputed fresh from the
+    database rather than trusting any client-submitted attachment list --
+    first submission (no `confirmed`) only *previews* counts, changing
+    nothing; only a second submission with `confirmed=1` actually
+    promotes anything. Recomputing fresh on the confirm step also makes
+    resubmitting the same confirm safely idempotent: anything no longer
+    `pending` (already handled by an earlier submission, or reviewed
+    another way meanwhile) simply won't be in the candidate set again.
+    """
+    filters = _parse_review_filters(
+        db,
+        batch_id=batch_id,
+        case_id=case_id,
+        document_type_id=document_type_id,
+        status=status,
+        candidate=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    candidates = list_recognized_pending_attachments(
+        db, batch_id=_int_or_none(batch_id), case_id=_int_or_none(case_id)
+    )
+    templates = request.app.state.templates
+
+    if confirmed != "1":
+        preview = preview_bulk_promotion(db, candidates)
+        return templates.TemplateResponse(
+            request,
+            "communication_bulk_attachment_review.html",
+            _bulk_review_context(db, filters, add_all_preview=preview),
+        )
+
+    summary = bulk_add_to_documents(db, vault, candidates, actor)
+    return templates.TemplateResponse(
+        request,
+        "communication_bulk_attachment_review.html",
+        _bulk_review_context(db, filters, bulk_result=summary),
+    )
+
+
+@router.post("/attachments/review/exclude-selected", response_class=HTMLResponse)
+def post_bulk_exclude_selected(
+    request: Request,
+    attachment_id: list[str] = Form([]),
+    batch_id: str = Form(""),
+    case_id: str = Form(""),
+    document_type_id: str = Form(""),
+    status: str = Form("pending"),
+    candidate: str = Form(""),
+    sender: str = Form(""),
+    subject: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
+) -> HTMLResponse:
+    filters = _parse_review_filters(
+        db,
+        batch_id=batch_id,
+        case_id=case_id,
+        document_type_id=document_type_id,
+        status=status,
+        candidate=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    attachments = _resolve_attachments(db, attachment_id)
+    summary = bulk_exclude(db, attachments, actor)
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communication_bulk_attachment_review.html",
+        _bulk_review_context(db, filters, bulk_result=summary),
+    )
+
+
+@router.post("/attachments/review/leave-selected", response_class=HTMLResponse)
+def post_bulk_leave_selected(
+    request: Request,
+    attachment_id: list[str] = Form([]),
+    batch_id: str = Form(""),
+    case_id: str = Form(""),
+    document_type_id: str = Form(""),
+    status: str = Form("pending"),
+    candidate: str = Form(""),
+    sender: str = Form(""),
+    subject: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
+) -> HTMLResponse:
+    filters = _parse_review_filters(
+        db,
+        batch_id=batch_id,
+        case_id=case_id,
+        document_type_id=document_type_id,
+        status=status,
+        candidate=candidate,
+        sender=sender,
+        subject=subject,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    attachments = _resolve_attachments(db, attachment_id)
+    summary = bulk_leave_with_email(db, attachments, actor)
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communication_bulk_attachment_review.html",
+        _bulk_review_context(db, filters, bulk_result=summary),
     )

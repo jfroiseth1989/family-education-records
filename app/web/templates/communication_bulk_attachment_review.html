@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}Review Attachments — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>Review Attachments</h1>
+  <p class="hint">
+    Bulk actions here call the exact same per-attachment logic as
+    reviewing one attachment at a time -- a classifier suggestion is
+    never applied automatically; a human decision is always required
+    and recorded. No Yahoo mailbox is contacted by anything on this
+    page -- everything shown was already imported locally.
+  </p>
+
+  {% if bulk_result %}
+    <section class="panel">
+      <h2>Result</h2>
+      <p class="hint">
+        {{ bulk_result.added_count }} added &middot;
+        {{ bulk_result.linked_count }} linked to an existing Document &middot;
+        {{ bulk_result.already_reviewed_count }} already reviewed (skipped) &middot;
+        {{ bulk_result.failed_count }} failed
+      </p>
+      {% if bulk_result.failed_count > 0 %}
+        <table class="data-table">
+          <thead><tr><th>Filename</th><th>Error</th></tr></thead>
+          <tbody>
+            {% for item in bulk_result.results %}
+              {% if item.outcome == "failed" %}
+                <tr><td>{{ item.filename }}</td><td>{{ item.error }}</td></tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if add_all_preview %}
+    <section class="panel auth-error">
+      <h2>Confirm: Add All Recognized</h2>
+      <p class="hint">
+        {{ add_all_preview.will_add_count }} attachment(s) will be added as new Documents.<br>
+        {{ add_all_preview.will_link_count }} will link to an existing Document (no duplicate created).<br>
+        {{ add_all_preview.not_processable_count }} cannot currently be processed (no student assigned or file missing) and will remain pending.
+      </p>
+      <form method="post" action="/communications/attachments/review/add-all-recognized">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <input type="hidden" name="confirmed" value="1">
+        <input type="hidden" name="batch_id" value="{{ filters.batch_id or '' }}">
+        <input type="hidden" name="case_id" value="{{ filters.case_id or '' }}">
+        <input type="hidden" name="status" value="{{ filters.review_status }}">
+        <button type="submit">Confirm and Add All Recognized</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <section class="panel panel-section-gap">
+    <h2>Filters</h2>
+    <form method="get" action="/communications/attachments/review">
+      <label>
+        Student
+        <select name="case_id">
+          <option value="">(any)</option>
+          {% for case in cases %}
+            <option value="{{ case.case_id }}" {% if filters.case_id == case.case_id %}selected{% endif %}>{{ case.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Import batch ID
+        <input type="text" name="batch_id" value="{{ filters.batch_id or '' }}" placeholder="e.g. 3">
+      </label>
+      <label>
+        Suggested document type
+        <select name="document_type_id">
+          <option value="">(any)</option>
+          {% for dt in document_types %}
+            <option value="{{ dt.type_id }}" {% if filters.document_type_id == dt.type_id %}selected{% endif %}>{{ dt.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Review status
+        <select name="status">
+          <option value="pending" {% if filters.review_status == "pending" %}selected{% endif %}>Pending</option>
+          <option value="added_to_documents" {% if filters.review_status == "added_to_documents" %}selected{% endif %}>Added to Documents</option>
+          <option value="excluded" {% if filters.review_status == "excluded" %}selected{% endif %}>Excluded</option>
+          <option value="left_with_email" {% if filters.review_status == "left_with_email" %}selected{% endif %}>Left with Email</option>
+          <option value="" {% if filters.review_status == "" %}selected{% endif %}>(any)</option>
+        </select>
+      </label>
+      <label>
+        Candidate status
+        <select name="candidate">
+          <option value="" {% if filters.candidate_filter == "" %}selected{% endif %}>(any)</option>
+          <option value="recognized" {% if filters.candidate_filter == "recognized" %}selected{% endif %}>Recognized (unambiguous suggestion)</option>
+          <option value="unrecognized" {% if filters.candidate_filter == "unrecognized" %}selected{% endif %}>Unrecognized / ambiguous</option>
+          <option value="duplicates" {% if filters.candidate_filter == "duplicates" %}selected{% endif %}>Duplicates of existing Documents</option>
+        </select>
+      </label>
+      <label>
+        Sender contains
+        <input type="text" name="sender" value="{{ filters.sender }}">
+      </label>
+      <label>
+        Subject contains
+        <input type="text" name="subject" value="{{ filters.subject }}">
+      </label>
+      <label>
+        Email date from
+        <input type="date" name="date_from" value="{{ filters.date_from or '' }}">
+      </label>
+      <label>
+        Email date to
+        <input type="date" name="date_to" value="{{ filters.date_to or '' }}">
+      </label>
+      <button type="submit">Apply Filters</button>
+    </form>
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Attachments ({{ rows | length }})</h2>
+    {% if rows %}
+      <p class="hint">
+        <a href="#" onclick="document.querySelectorAll('.attachment-checkbox').forEach(function(cb){cb.checked=true;}); return false;">Select all visible</a>
+        &middot;
+        <a href="#" onclick="document.querySelectorAll('.attachment-checkbox').forEach(function(cb){cb.checked=false;}); return false;">Clear selection</a>
+        &middot;
+        <a href="#" onclick="document.querySelectorAll('.attachment-checkbox').forEach(function(cb){cb.checked = cb.closest('tr').dataset.recognized === '1';}); return false;">Select recognized</a>
+        &middot;
+        <a href="#" onclick="document.querySelectorAll('.attachment-checkbox').forEach(function(cb){cb.checked = cb.closest('tr').dataset.duplicate === '1';}); return false;">Select duplicates</a>
+        &middot;
+        <a href="#" onclick="document.querySelectorAll('.attachment-checkbox').forEach(function(cb){cb.checked = cb.closest('tr').dataset.status === 'pending';}); return false;">Select pending</a>
+      </p>
+
+      <form method="post" id="bulk-review-form">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <input type="hidden" name="batch_id" value="{{ filters.batch_id or '' }}">
+        <input type="hidden" name="case_id" value="{{ filters.case_id or '' }}">
+        <input type="hidden" name="document_type_id" value="{{ filters.document_type_id or '' }}">
+        <input type="hidden" name="status" value="{{ filters.review_status }}">
+        <input type="hidden" name="candidate" value="{{ filters.candidate_filter }}">
+        <input type="hidden" name="sender" value="{{ filters.sender }}">
+        <input type="hidden" name="subject" value="{{ filters.subject }}">
+        <input type="hidden" name="date_from" value="{{ filters.date_from or '' }}">
+        <input type="hidden" name="date_to" value="{{ filters.date_to or '' }}">
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Filename</th>
+              <th>Email Subject</th>
+              <th>Sender</th>
+              <th>Email Date</th>
+              <th>Student</th>
+              <th>Suggested Type</th>
+              <th>Candidate?</th>
+              <th>Duplicate?</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              {% set attachment = row.attachment %}
+              {% set communication = attachment.communication %}
+              <tr data-recognized="{{ '1' if attachment.is_educational_record_candidate else '0' }}"
+                  data-duplicate="{{ '1' if row.existing_document else '0' }}"
+                  data-status="{{ attachment.review_status }}">
+                <td><input type="checkbox" class="attachment-checkbox" name="attachment_id" value="{{ attachment.attachment_id }}"></td>
+                <td>{{ attachment.filename }}</td>
+                <td><a href="/communications/email/{{ communication.communication_id }}">{{ communication.subject or "(no subject)" }}</a></td>
+                <td>{{ communication.from_display_name or communication.from_address or "—" }}</td>
+                <td>{{ communication.sent_at or "—" }}</td>
+                <td>{{ communication.case.display_name if communication.case else "—" }}</td>
+                <td>{{ attachment.suggested_document_type.name if attachment.suggested_document_type else "—" }}</td>
+                <td>{{ "Yes" if attachment.is_educational_record_candidate else "No" }}</td>
+                <td>
+                  {% if row.existing_document %}
+                    <a href="/documents/{{ row.existing_document.document_id }}">Existing Document</a>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>{{ attachment.review_status }}</td>
+                <td>
+                  <a href="/communications/attachments/{{ attachment.attachment_id }}/file">View Attachment</a>
+                  &middot;
+                  <a href="/communications/attachments/{{ attachment.attachment_id }}/review">Edit / Review</a>
+                  {% if attachment.resulting_document_id %}
+                    &middot;
+                    <a href="/documents/{{ attachment.resulting_document_id }}">View Document</a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <button type="submit" formaction="/communications/attachments/review/add-selected">Add Selected to Documents</button>
+        <button type="submit" formaction="/communications/attachments/review/exclude-selected" class="btn-secondary">Exclude Selected</button>
+        <button type="submit" formaction="/communications/attachments/review/leave-selected" class="btn-secondary">Leave Selected with Email</button>
+      </form>
+
+      <form method="post" action="/communications/attachments/review/add-all-recognized" class="panel-section-gap">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <input type="hidden" name="batch_id" value="{{ filters.batch_id or '' }}">
+        <input type="hidden" name="case_id" value="{{ filters.case_id or '' }}">
+        <input type="hidden" name="status" value="{{ filters.review_status }}">
+        <button type="submit" class="btn-secondary">Add All Recognized (this filter's batch/student scope)</button>
+      </form>
+    {% else %}
+      <p class="empty-state">No attachments match these filters.</p>
+    {% endif %}
+  </section>
+{% endblock %}

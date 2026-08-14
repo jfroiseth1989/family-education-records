@@ -535,7 +535,79 @@ same read-only-on-write convention.
     Cancel/Resume/Retry-Failed controls shown only when each is
     meaningful for the batch's current status, plus a "Recent Import
     Batches" section on the Communications home page.
-11. Bulk attachment-review screen, built on Step 5's logic.
+11. ✅ Bulk attachment-review screen, built on Step 5's logic.
+
+    Pure orchestration -- `app/core/communications/bulk_attachment_review.py`
+    never classifies, never computes a metadata suggestion, and never
+    decides duplicate-vs-new-Document on its own. Every actual promotion/
+    exclude/leave-with-email decision still runs through Step 5's
+    unmodified `promote_attachment_to_document()`/`exclude_attachment()`/
+    `leave_attachment_with_email()`, called once per attachment. The one
+    piece of read-only logic this step adds itself,
+    `_existing_document_for()`, exists only so a listing/preview can say
+    "this will link an existing Document" *before* anything commits --
+    mirroring `ingest_document()`'s own `(case_id, sha256_hash)` rule
+    without ever calling the real ingestion path just to discard the
+    result (unsafe: it writes to the vault as a side effect a DB
+    rollback can't undo).
+
+    `list_review_attachments()` is a single filterable query (batch,
+    student/case, suggested type, review status, recognized/
+    unrecognized/duplicates, sender, subject, date range) -- "recognized"
+    and "unrecognized" need no new classification signal at all:
+    `is_educational_record_candidate` already collapses "no trigger
+    matched," "ambiguous (several types matched)," and "unreadable
+    format" into the same `False`, exactly the union Step 11's own
+    safety requirement needs. `list_recognized_pending_attachments()` is
+    the literal "Add all recognized" candidate set --
+    `review_status == "pending"` and `is_educational_record_candidate`,
+    nothing else -- which by construction already excludes unsupported/
+    unreadable/ambiguous files, already-reviewed attachments, and
+    already-excluded/left-with-email attachments, without a single
+    additional check.
+
+    Bulk actions (`bulk_add_to_documents()`/`bulk_exclude()`/
+    `bulk_leave_with_email()`) process attachments one at a time with
+    real per-item isolation: each item gets its own `db.commit()` (or
+    `db.rollback()` on failure) before the loop continues, so one
+    attachment's unexpected failure can never undo an earlier
+    attachment's already-committed success, and a partial bulk failure
+    never leaves a half-written `Document`/link row behind (the
+    rollback always happens before recording that item as failed). An
+    attachment no longer `pending` when its turn comes is recorded as
+    `already_reviewed`, not `failed` or silently skipped -- what makes
+    resubmitting the exact same bulk selection safely idempotent.
+    Bulk-accepted suggested metadata is recorded with
+    `field_provenance="suggested"` for each field actually used -- the
+    same value the single-attachment review page itself records when a
+    human submits its pre-filled defaults untouched -- so a bulk-
+    accepted default is indistinguishable in the audit trail from a
+    human individually accepting that same default. Per-item metadata
+    edits before promotion reuse the existing single-attachment review
+    page directly (linked from every row) rather than a second edit UI.
+
+    "Add all recognized" is two-phase and never trusts a client-
+    submitted attachment list: the first submission only computes and
+    shows `preview_bulk_promotion()`'s counts (will-add / will-link /
+    not-processable) and commits nothing; only a second submission with
+    `confirmed=1` re-queries `list_recognized_pending_attachments()`
+    *fresh* and actually promotes -- which is also what makes a
+    duplicate confirm-click safe (anything no longer eligible by then
+    simply isn't in the recomputed set). Scoped by `batch_id`/`case_id`
+    only, regardless of whatever narrower display filters (sender/
+    subject/suggested-type) the page happened to be showing --
+    "recognized" always means every eligible attachment in that batch/
+    student, not an accidental subset of the current view.
+
+    New `/communications/attachments/review` (GET, list+filters) and
+    `/communications/attachments/review/{add-selected,
+    add-all-recognized, exclude-selected, leave-selected}` (POST) routes
+    -- all render the same list template back with a result summary
+    rather than redirecting, matching the single-attachment review
+    page's own convention. The import-batch status page gained a
+    "Review Attachments" link (shown once a batch has imported anything)
+    scoped to that batch via `?batch_id=`; the Communications home page
+    gained a general, unscoped link to the same page.
 12. *(Gated on Yahoo approving access)* OAuth2 as an added, preferred
     auth option — only if and when approval actually comes through.
 
