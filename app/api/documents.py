@@ -31,7 +31,14 @@ from app.core.ocr.queue import enqueue_ocr_job
 from app.core.ocr.text import effective_text
 from app.core.tagging import list_case_tags
 from app.core.vault import VaultLayout
-from app.db.models import Case, Document, DocumentDatePrecision, DocumentDateSource, DocumentType
+from app.db.models import (
+    Case,
+    CommunicationDocumentLink,
+    Document,
+    DocumentDatePrecision,
+    DocumentDateSource,
+    DocumentType,
+)
 
 router = APIRouter(tags=["documents"])
 
@@ -480,6 +487,18 @@ def get_document(
     type_suggestion = _compute_type_suggestion(document, document_types)
     date_suggestions = _compute_date_suggestions(document)
 
+    # Originating emails (Communications Phase Step 5): the same document
+    # may have arrived via more than one email/attachment -- see
+    # CommunicationDocumentLink's docstring. Read-only here; nothing about
+    # viewing a document ever creates or changes a link.
+    communication_links = list(
+        db.scalars(
+            select(CommunicationDocumentLink)
+            .where(CommunicationDocumentLink.document_id == document.document_id)
+            .order_by(CommunicationDocumentLink.linked_at)
+        ).all()
+    )
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -497,6 +516,7 @@ def get_document(
             "document_types": document_types,
             "type_suggestion": type_suggestion,
             "date_suggestions": date_suggestions,
+            "communication_links": communication_links,
         },
     )
 

@@ -545,6 +545,125 @@ def test_upload_email_valid_csrf_token_succeeds(client_no_csrf_header: TestClien
         assert db.query(Communication).count() == 1
 
 
+# --- Communications: attachment review/promotion (Communications Phase Step 5) --
+
+
+def _eml_with_attachment_files(message_id: str = "<csrf-attach@example.org>"):
+    content = (
+        b"From: sender@example.org\n"
+        b"To: parent@yahoo.com\n"
+        b"Subject: CSRF Attachment Test\n"
+        b"Message-ID: " + message_id.encode() + b"\n"
+        b'Content-Type: multipart/mixed; boundary="BOUNDARY"\n'
+        b"\n"
+        b"--BOUNDARY\n"
+        b"Content-Type: text/plain\n\n"
+        b"Body.\n"
+        b"--BOUNDARY\n"
+        b"Content-Type: application/pdf\n"
+        b'Content-Disposition: attachment; filename="test.pdf"\n'
+        b"Content-Transfer-Encoding: base64\n\n"
+        b"JVBERi0xLjQK\n"
+        b"--BOUNDARY--\n"
+    )
+    return {"file": ("notice.eml", content, "message/rfc822")}
+
+
+def _seeded_attachment(client_no_csrf_header: TestClient, app: FastAPI) -> int:
+    from app.db.models import CommunicationAttachment
+
+    case_id = _create_case(client_no_csrf_header)
+    upload_response = client_no_csrf_header.post(
+        "/communications/upload",
+        data={"case_id": str(case_id), "csrf_token": _csrf(client_no_csrf_header)},
+        files=_eml_with_attachment_files(),
+        follow_redirects=False,
+    )
+    communication_id = int(upload_response.headers["location"].rsplit("/", 1)[-1])
+    with app.state.session_factory() as db:
+        return (
+            db.scalars(
+                select(CommunicationAttachment).where(
+                    CommunicationAttachment.communication_id == communication_id
+                )
+            )
+            .one()
+            .attachment_id
+        )
+
+
+def test_add_to_documents_missing_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Document
+
+    attachment_id = _seeded_attachment(client_no_csrf_header, app)
+
+    response = client_no_csrf_header.post(
+        f"/communications/attachments/{attachment_id}/add-to-documents", data={}, follow_redirects=False
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.query(Document).count() == 0
+
+
+def test_add_to_documents_invalid_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Document
+
+    attachment_id = _seeded_attachment(client_no_csrf_header, app)
+
+    response = client_no_csrf_header.post(
+        f"/communications/attachments/{attachment_id}/add-to-documents",
+        data={"csrf_token": "wrong-token"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.query(Document).count() == 0
+
+
+def test_add_to_documents_valid_csrf_token_succeeds(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import Document
+
+    attachment_id = _seeded_attachment(client_no_csrf_header, app)
+
+    response = client_no_csrf_header.post(
+        f"/communications/attachments/{attachment_id}/add-to-documents",
+        data={"csrf_token": _csrf(client_no_csrf_header)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+
+    with app.state.session_factory() as db:
+        assert db.query(Document).count() == 1
+
+
+def test_exclude_attachment_missing_csrf_token_rejected(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import CommunicationAttachment
+
+    attachment_id = _seeded_attachment(client_no_csrf_header, app)
+
+    response = client_no_csrf_header.post(
+        f"/communications/attachments/{attachment_id}/exclude", follow_redirects=False
+    )
+    assert response.status_code == 403
+
+    with app.state.session_factory() as db:
+        assert db.get(CommunicationAttachment, attachment_id).review_status == "pending"
+
+
+def test_exclude_attachment_valid_csrf_token_succeeds(client_no_csrf_header: TestClient, app: FastAPI):
+    from app.db.models import CommunicationAttachment
+
+    attachment_id = _seeded_attachment(client_no_csrf_header, app)
+
+    response = _post_with_csrf(client_no_csrf_header, f"/communications/attachments/{attachment_id}/exclude")
+    assert response.status_code == 303
+
+    with app.state.session_factory() as db:
+        assert db.get(CommunicationAttachment, attachment_id).review_status == "excluded"
+
+
 # --- Cache headers on a CSRF rejection response -----------------------
 
 

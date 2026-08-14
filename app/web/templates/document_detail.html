@@ -362,6 +362,29 @@
     </section>
   {% endif %}
 
+  {% if communication_links %}
+    <section class="panel">
+      <h2>Originating Emails ({{ communication_links | length }})</h2>
+      <p class="hint">The same document can arrive via more than one email — each row below is an
+        independent email/attachment that produced or re-delivered this exact document.</p>
+      <table class="data-table">
+        <thead>
+          <tr><th>Email</th><th>From</th><th>Attachment</th><th>Linked</th></tr>
+        </thead>
+        <tbody>
+          {% for link in communication_links %}
+            <tr>
+              <td><a href="/communications/email/{{ link.communication_id }}">{{ link.communication.subject or "(no subject)" }}</a></td>
+              <td>{{ link.communication.from_display_name or link.communication.from_address or "—" }}</td>
+              <td>{{ link.communication_attachment.filename }}</td>
+              <td>{{ link.linked_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
   <section class="panel">
     <h2>Chain of custody</h2>
     <table class="data-table">

@@ -148,10 +148,45 @@ same read-only-on-write convention.
    `communication_detail.html` gained a "View Thread" link shown only
    when `thread_id` is set. No new migration (the `communication_threads`
    table already existed from Step 1).
-5. Attachment educational-record detection (extended trigger coverage
-   per §1 decision 2) + single-item attachment review + "Add to
-   Documents" via the existing auto-fill preview + document↔email
-   linking + cross-email duplicate-document detection.
+5. ✅ Attachment educational-record detection + single-item attachment
+   review + "Add to Documents" + document↔email linking + cross-email
+   duplicate-document detection. `app/core/document_type_suggestion.py`
+   gained trigger coverage for the original Phase 1 DocumentTypes
+   (Evaluation, 504 Plan, Correspondence, Discipline, Attendance,
+   Grades, Medical, Legal Filing, Audio Transcript), with
+   "Reevaluation"/"Eligibility Determination" as trigger synonyms for
+   Evaluation per §1 decision 2 -- no new DocumentType rows added.
+   `app/core/communications/attachment_classification.py` reuses that
+   same matcher (best-effort native text, filename-only on an
+   unsupported/unreadable format -- never a forced or crashing
+   classification) and is run automatically in `_store_attachment()`,
+   filling in only the advisory `is_educational_record_candidate`/
+   `suggested_document_type_id` columns; `review_status` stays
+   `"pending"` until a human decides.
+   `app/core/communications/attachment_metadata.py` turns a
+   Communication's already-structured From/sent/received fields into
+   Source/Date-Received/Notes suggestions -- deliberately not built on
+   the regex-based `document_source_suggestion.py`/`document_date_suggestion.py`,
+   since structured data is strictly higher-confidence than re-deriving
+   it from text.
+   `app/core/communications/promotion.py::promote_attachment_to_document()`
+   reuses `ingest_document()` unchanged, reading the attachment's own
+   preserved copy as its source; on `DuplicateDocumentError` it links to
+   the existing Document via `CommunicationDocumentLink` instead of
+   raising a user-facing failure, writes a `communication_attachment_linked`
+   custody event on the Document ledger and an `attachment_added_to_documents`
+   event on the Communication ledger, and is idempotent (a repeat
+   promotion finds the existing link and writes nothing further).
+   `exclude_attachment()`/`leave_attachment_with_email()` record the
+   other two review outcomes without ever creating a Document.
+   New `/communications/attachments/{id}/review` (view/edit-suggestions/
+   Add to Documents/Exclude/Leave with Email), `/review`'s file-serving
+   sibling, `/add-to-documents`, `/exclude`, and `/leave-with-email`
+   routes; `communication_detail.html` and `document_detail.html` gained
+   bidirectional provenance sections (linked Documents from an email;
+   originating emails for a Document, supporting more than one).
+   Bulk attachment review is still Step 11 -- this step only established
+   correct single-attachment behavior for it to reuse.
 6. `communication_text_fts` (new, independent FTS5 table) + Communications
    search/filter UI.
 7. Timeline suggestions from communications (approve/edit/reject),

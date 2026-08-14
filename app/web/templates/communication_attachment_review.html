@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Review attachment: {{ attachment.filename }} — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications/email/{{ communication.communication_id }}">&larr; {{ communication.subject or "(no subject)" }}</a></p>
+  <h1>Review attachment: {{ attachment.filename }}</h1>
+
+  {% if promotion_message %}
+    <p class="hint auth-error" style="border-color: var(--accent, #2563eb);">{{ promotion_message }}
+      {% if promoted_document %}
+        — <a href="/documents/{{ promoted_document.document_id }}">View {{ "Existing " if not promotion_message.startswith("Added") else "" }}Document</a>
+      {% endif %}
+    </p>
+  {% endif %}
+
+  <section class="panel">
+    <h2>Attachment</h2>
+    <table class="kv-table">
+      <tr><th>Filename</th><td>{{ attachment.filename }} — <a href="/communications/attachments/{{ attachment.attachment_id }}/file">View attachment</a></td></tr>
+      <tr><th>Type</th><td>{{ attachment.mime_type or "—" }}</td></tr>
+      <tr><th>Size</th><td>{{ attachment.size_bytes }} bytes</td></tr>
+      <tr><th>SHA-256</th><td><code>{{ attachment.sha256_hash }}</code></td></tr>
+      <tr><th>Review status</th><td>{{ attachment.review_status }}</td></tr>
+      <tr>
+        <th>Suggested educational record?</th>
+        <td>
+          {% if attachment.is_educational_record_candidate %}
+            Yes — suggested type: <strong>{{ attachment.suggested_document_type.name if attachment.suggested_document_type else "—" }}</strong>
+            <p class="hint">This is a local, deterministic keyword match only — never an AI guess — and is never applied automatically.</p>
+          {% else %}
+            No confident suggestion — this does not mean the attachment isn't an educational record, only that no reliable local keyword match was found. It remains available to add manually below.
+          {% endif %}
+        </td>
+      </tr>
+    </table>
+  </section>
+
+  {% if attachment.review_status == "added_to_documents" and attachment.resulting_document_id and not promotion_message %}
+    <section class="panel panel-section-gap">
+      <h2>Already reviewed</h2>
+      <p class="hint">This attachment was already added to Documents.
+        <a href="/documents/{{ attachment.resulting_document_id }}">View Document</a>
+      </p>
+    </section>
+  {% elif attachment.review_status in ("excluded", "left_with_email") and not promotion_message %}
+    <section class="panel panel-section-gap">
+      <h2>Already reviewed</h2>
+      <p class="hint">
+        {% if attachment.review_status == "excluded" %}
+          This attachment was excluded and was not added to Documents.
+        {% else %}
+          This attachment was left with the email only and was not added to Documents.
+        {% endif %}
+      </p>
+    </section>
+  {% else %}
+    <section class="panel panel-section-gap">
+      <h2>Add to Documents</h2>
+      <form method="post" action="/communications/attachments/{{ attachment.attachment_id }}/add-to-documents" id="attachment-review-form">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <input type="hidden" name="document_type_source" id="document_type_source" value="{{ 'suggested' if suggested_type_id else '' }}">
+        <input type="hidden" name="source_source" id="source_source" value="{{ 'suggested' if suggested_source else '' }}">
+        <input type="hidden" name="date_received_source" id="date_received_source" value="{{ 'suggested' if suggested_date_received else '' }}">
+        <input type="hidden" name="notes_source" id="notes_source" value="{{ 'suggested' if suggested_notes else '' }}">
+
+        <label>
+          Document type
+          {% set document_types_other_last = (document_types | rejectattr("name", "equalto", "Other") | list) + (document_types | selectattr("name", "equalto", "Other") | list) %}
+          <select name="document_type_id" id="document_type_id" data-source-input="document_type_source">
+            <option value="">(unspecified)</option>
+            {% for dt in document_types_other_last %}
+              <option value="{{ dt.type_id }}" {% if suggested_type_id == dt.type_id %}selected{% endif %}>{{ dt.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>
+          Source
+          <input type="text" name="source" id="source" maxlength="300" data-source-input="source_source"
+                 value="{{ suggested_source or '' }}">
+        </label>
+        {% if suggested_source %}
+          <p class="hint suggestion-hint">Suggested from the email's From header. Edit or clear as needed.</p>
+        {% endif %}
+
+        <label>
+          Date received
+          <input type="date" name="date_received" id="date_received" data-source-input="date_received_source"
+                 value="{{ suggested_date_received }}">
+        </label>
+        {% if suggested_date_received %}
+          <p class="hint suggestion-hint">Suggested from the email's date — only offered because this email itself establishes when the attachment was received.</p>
+        {% endif %}
+
+        <label>
+          Notes
+          <textarea name="notes" id="notes" rows="3" data-source-input="notes_source">{{ suggested_notes or '' }}</textarea>
+        </label>
+        {% if suggested_notes %}
+          <p class="hint suggestion-hint">A deterministic, fixed-template note — never AI-written narrative.</p>
+        {% endif %}
+
+        <button type="submit">Add to Documents</button>
+      </form>
+    </section>
+
+    <section class="panel panel-section-gap">
+      <h2>Other actions</h2>
+      <form method="post" action="/communications/attachments/{{ attachment.attachment_id }}/exclude" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <button type="submit" class="btn-secondary">Exclude</button>
+      </form>
+      <form method="post" action="/communications/attachments/{{ attachment.attachment_id }}/leave-with-email" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <button type="submit" class="btn-secondary">Leave with Email</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <script>
+    (function () {
+      document.querySelectorAll("[data-source-input]").forEach(function (field) {
+        var sourceInput = document.getElementById(field.dataset.sourceInput);
+        if (!sourceInput) return;
+        field.addEventListener("input", function () {
+          sourceInput.value = field.value.trim() === "" ? "cleared" : "edited";
+        });
+        field.addEventListener("change", function () {
+          sourceInput.value = field.value.trim() === "" ? "cleared" : "edited";
+        });
+      });
+    })();
+  </script>
+{% endblock %}

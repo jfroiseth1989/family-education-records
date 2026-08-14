@@ -536,3 +536,219 @@ def test_thread_detail_redirects_when_unauthenticated(anonymous_client: TestClie
     response = anonymous_client.get("/communications/threads/1", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/auth/login"
+
+
+# --- attachment review / promotion to Documents (Communications Phase Step 5) --
+
+
+def _eml_with_attachment_bytes(
+    *, message_id: str = "<att-1@example.org>", subject: str = "2024 IEP", filename: str = "2024 IEP.pdf"
+) -> bytes:
+    return (
+        b"From: Amanda Wagner <amanda.wagner@district.example.org>\n"
+        b"To: parent@yahoo.com\n"
+        b"Subject: " + subject.encode() + b"\n"
+        b"Date: Mon, 7 Mar 2022 14:30:00 -0500\n"
+        b"Message-ID: " + message_id.encode() + b"\n"
+        b'Content-Type: multipart/mixed; boundary="BOUNDARY"\n'
+        b"\n"
+        b"--BOUNDARY\n"
+        b"Content-Type: text/plain\n\n"
+        b"See attached.\n"
+        b"--BOUNDARY\n"
+        b"Content-Type: application/pdf\n"
+        b'Content-Disposition: attachment; filename="' + filename.encode() + b'"\n'
+        b"Content-Transfer-Encoding: base64\n\n"
+        b"JVBERi0xLjQK\n"
+        b"--BOUNDARY--\n"
+    )
+
+
+def _upload_email_with_attachment(client: TestClient, case_id: int, **kwargs) -> int:
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": ("notice.eml", _eml_with_attachment_bytes(**kwargs), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return int(response.headers["location"].rsplit("/", 1)[-1])
+
+
+def _get_attachment_id(app: FastAPI, communication_id: int) -> int:
+    from app.db.models import CommunicationAttachment
+
+    with app.state.session_factory() as db:
+        return db.scalars(
+            select(CommunicationAttachment).where(CommunicationAttachment.communication_id == communication_id)
+        ).one().attachment_id
+
+
+def test_attachment_review_page_shows_suggestions(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id, filename="2024 IEP.pdf")
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    response = client.get(f"/communications/attachments/{attachment_id}/review")
+    assert response.status_code == 200
+    assert "IEP" in response.text
+    assert "Amanda Wagner" in response.text  # suggested Source
+    assert "2022-03-07" in response.text  # suggested Date received
+    assert "Received as an attachment to email from Amanda Wagner" in response.text  # suggested Notes
+
+
+def test_attachment_review_view_attachment_link(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    review = client.get(f"/communications/attachments/{attachment_id}/review")
+    assert f"/communications/attachments/{attachment_id}/file" in review.text
+
+    file_response = client.get(f"/communications/attachments/{attachment_id}/file")
+    assert file_response.status_code == 200
+
+
+def test_add_attachment_to_documents_creates_document(client: TestClient, app: FastAPI):
+    from app.db.models import Document
+
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    response = client.post(
+        f"/communications/attachments/{attachment_id}/add-to-documents",
+        data={"source": "Amanda Wagner", "date_received": "2022-03-07", "notes": "Received via email."},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+    assert "Added to Documents" in response.text
+
+    with app.state.session_factory() as db:
+        document = db.scalars(select(Document)).one()
+        assert document.source == "Amanda Wagner"
+        assert document.notes == "Received via email."
+
+
+def test_add_duplicate_attachment_surfaces_already_in_ferchronos(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+
+    # First email/attachment -- promotes to a brand-new Document.
+    communication_id_a = _upload_email_with_attachment(client, case_id, message_id="<dup-a@x>")
+    attachment_id_a = _get_attachment_id(app, communication_id_a)
+    client.post(f"/communications/attachments/{attachment_id_a}/add-to-documents", data={}, follow_redirects=False)
+
+    # Second email, identical attachment bytes -- must link, not duplicate.
+    communication_id_b = _upload_email_with_attachment(client, case_id, message_id="<dup-b@x>")
+    attachment_id_b = _get_attachment_id(app, communication_id_b)
+    response = client.post(
+        f"/communications/attachments/{attachment_id_b}/add-to-documents", data={}, follow_redirects=False
+    )
+
+    assert response.status_code == 200
+    assert "already in FERChronos" in response.text
+
+    from app.db.models import Document
+
+    with app.state.session_factory() as db:
+        assert db.query(Document).count() == 1
+
+
+def test_exclude_attachment_route(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    response = client.post(f"/communications/attachments/{attachment_id}/exclude", follow_redirects=False)
+    assert response.status_code == 303
+
+    review = client.get(f"/communications/attachments/{attachment_id}/review")
+    assert "excluded" in review.text.lower()
+
+    from app.db.models import Document
+
+    with app.state.session_factory() as db:
+        assert db.query(Document).count() == 0
+
+
+def test_leave_with_email_route(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    response = client.post(
+        f"/communications/attachments/{attachment_id}/leave-with-email", follow_redirects=False
+    )
+    assert response.status_code == 303
+
+    review = client.get(f"/communications/attachments/{attachment_id}/review")
+    assert "left with the email" in review.text.lower()
+
+
+def test_communication_detail_shows_linked_document(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+    client.post(f"/communications/attachments/{attachment_id}/add-to-documents", data={}, follow_redirects=False)
+
+    response = client.get(f"/communications/email/{communication_id}")
+    assert "2024 IEP.pdf" in response.text
+
+
+def test_document_detail_shows_multiple_originating_emails(client: TestClient, app: FastAPI):
+    case_id = _create_case(client)
+
+    communication_id_a = _upload_email_with_attachment(client, case_id, message_id="<multi-a@x>")
+    attachment_id_a = _get_attachment_id(app, communication_id_a)
+    client.post(f"/communications/attachments/{attachment_id_a}/add-to-documents", data={}, follow_redirects=False)
+
+    communication_id_b = _upload_email_with_attachment(client, case_id, message_id="<multi-b@x>")
+    attachment_id_b = _get_attachment_id(app, communication_id_b)
+    client.post(f"/communications/attachments/{attachment_id_b}/add-to-documents", data={}, follow_redirects=False)
+
+    from app.db.models import CommunicationAttachment
+
+    with app.state.session_factory() as db:
+        document_id = db.get(CommunicationAttachment, attachment_id_a).resulting_document_id
+
+    response = client.get(f"/documents/{document_id}")
+    assert response.status_code == 200
+    assert "Originating Emails (2)" in response.text
+
+
+def test_user_edited_source_is_not_overwritten_by_suggestion(client: TestClient, app: FastAPI):
+    from app.db.models import Document
+
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id)
+    attachment_id = _get_attachment_id(app, communication_id)
+
+    response = client.post(
+        f"/communications/attachments/{attachment_id}/add-to-documents",
+        data={"source": "Manually Typed Source", "source_source": "edited"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 200
+
+    with app.state.session_factory() as db:
+        document = db.scalars(select(Document)).one()
+        assert document.source == "Manually Typed Source"
+
+
+def test_attachment_review_unknown_id_returns_404(client: TestClient):
+    response = client.get("/communications/attachments/999999/review")
+    assert response.status_code == 404
+
+
+def test_attachment_review_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.get("/communications/attachments/1/review", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"
+
+
+def test_add_to_documents_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.post(
+        "/communications/attachments/1/add-to-documents", data={}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"

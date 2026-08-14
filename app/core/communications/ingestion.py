@@ -22,6 +22,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.communications.attachment_classification import classify_attachment, resolve_document_type_id
 from app.core.communications.custody import write_communication_custody_event
 from app.core.communications.thread_rebuild import rebuild_threads
 from app.core.extraction.email import parse_message
@@ -153,9 +154,10 @@ def _store_attachment(
     attachment: ExtractedAttachment,
 ) -> CommunicationAttachment:
     """Write one parsed attachment's bytes into the vault, read-only, and
-    record it -- always `review_status="pending"`; nothing here decides
-    whether it looks like an educational record or promotes it to a
-    `Document` (Step 5).
+    record it -- always `review_status="pending"`; classification (Step 5)
+    only ever fills in `is_educational_record_candidate`/
+    `suggested_document_type_id` as advisory hints, never promotes
+    anything to a `Document` or changes `review_status` itself.
     """
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(attachment.filename).suffix) as tmp:
         tmp.write(attachment.content)
@@ -175,6 +177,15 @@ def _store_attachment(
         tmp_path.unlink(missing_ok=True)
 
     relative_stored_path = str(destination.relative_to(vault.root))
+
+    # Classification reads the file back from its final, already-read-only
+    # vault location -- read-only access, never a second write -- and is
+    # never allowed to fail attachment storage: an unsupported or
+    # unreadable format simply yields no suggestion (see
+    # classify_attachment's docstring).
+    type_suggestion = classify_attachment(attachment.filename, destination)
+    suggested_type_id = resolve_document_type_id(db, type_suggestion)
+
     row = CommunicationAttachment(
         communication_id=communication.communication_id,
         filename=attachment.filename,
@@ -182,6 +193,8 @@ def _store_attachment(
         size_bytes=len(attachment.content),
         sha256_hash=attachment_hash,
         stored_path=relative_stored_path,
+        is_educational_record_candidate=suggested_type_id is not None,
+        suggested_document_type_id=suggested_type_id,
     )
     db.add(row)
     db.flush()

@@ -42,7 +42,7 @@
     {% if attachments %}
       <table class="data-table">
         <thead>
-          <tr><th>Filename</th><th>Type</th><th>Size</th><th>Status</th><th>SHA-256</th></tr>
+          <tr><th>Filename</th><th>Type</th><th>Size</th><th>Suggested type</th><th>Status</th><th>SHA-256</th><th></th></tr>
         </thead>
         <tbody>
           {% for attachment in attachments %}
@@ -50,14 +50,43 @@
               <td>{{ attachment.filename }}</td>
               <td>{{ attachment.mime_type or "—" }}</td>
               <td>{{ attachment.size_bytes }} bytes</td>
+              <td>{{ attachment.suggested_document_type.name if attachment.suggested_document_type else "—" }}</td>
               <td>{{ attachment.review_status }}</td>
               <td class="hash"><code>{{ attachment.sha256_hash[:12] }}…</code></td>
+              <td>
+                <a href="/communications/attachments/{{ attachment.attachment_id }}/review">Review</a>
+                {% if attachment.resulting_document_id %}
+                  &middot; <a href="/documents/{{ attachment.resulting_document_id }}">View Document</a>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     {% else %}
       <p class="empty-state">No attachments on this message.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Linked Documents ({{ document_links | length }})</h2>
+    {% if document_links %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Document</th><th>From attachment</th><th>Linked</th></tr>
+        </thead>
+        <tbody>
+          {% for link in document_links %}
+            <tr>
+              <td><a href="/documents/{{ link.document_id }}">{{ link.document.original_filename }}</a></td>
+              <td>{{ link.communication_attachment.filename }}</td>
+              <td>{{ link.linked_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No Documents linked from this email yet.</p>
     {% endif %}
   </section>
 {% endblock %}

@@ -118,6 +118,91 @@ _TYPE_TRIGGERS: tuple[tuple[str, tuple[_Trigger, ...]], ...] = (
             _t("due process request"),
         ),
     ),
+    # Added in Communications Phase Step 5 -- extends coverage to the
+    # original Phase 1 DocumentTypes, which had no trigger phrases at all
+    # before this (only the 17 types above, added in FERChronos Step 5.6,
+    # did). "Reevaluation" and "Eligibility Determination" are trigger
+    # synonyms for Evaluation specifically -- docs/COMMUNICATIONS_PLAN.md
+    # §1 decision 2: no new DocumentType row is added for either at this
+    # stage, they simply suggest the existing "Evaluation" type.
+    (
+        "Evaluation",
+        (
+            _t("evaluation report"),
+            _t("psychoeducational evaluation"),
+            _t("psychological evaluation"),
+            _t("educational evaluation"),
+            _t("reevaluation report"),
+            _t("reevaluation"),
+            _t("re-evaluation"),
+            # Filename matching normalizes "-"/"_" to spaces before
+            # matching (see suggest_document_type), so a hyphenated
+            # filename like "Re-Evaluation Notice.pdf" needs the
+            # space-joined form too -- the hyphenated trigger above still
+            # covers a body-text sample, which is never normalized.
+            _t("re evaluation"),
+            _t("eligibility determination"),
+            _t("eligibility for special education"),
+        ),
+    ),
+    (
+        "504 Plan",
+        (_t("504 plan"), _t("section 504 plan"), _t("504 accommodation plan")),
+    ),
+    (
+        "Correspondence",
+        (
+            _t("correspondence"),
+            _t("letter to parent"),
+            _t("letter to family"),
+            _t("letter to guardian"),
+        ),
+    ),
+    (
+        "Discipline",
+        (
+            _t("discipline referral"),
+            _t("disciplinary referral"),
+            _t("disciplinary action"),
+            _t("suspension notice"),
+            _t("expulsion notice"),
+            _t("discipline notice"),
+        ),
+    ),
+    (
+        "Attendance",
+        (_t("attendance record"), _t("attendance report"), _t("truancy notice")),
+    ),
+    (
+        "Grades",
+        (
+            _t("grade report"),
+            _t("academic transcript"),
+            _t("unofficial transcript"),
+            _t("official transcript"),
+            _t("semester grades"),
+            _t("quarterly grades"),
+        ),
+    ),
+    (
+        "Medical",
+        (
+            _t("medical record"),
+            _t("physician statement"),
+            _t("doctor's note"),
+            _t("health record"),
+            _t("immunization record"),
+            _t("medical evaluation"),
+        ),
+    ),
+    (
+        "Legal Filing",
+        (_t("legal filing"), _t("court filing"), _t("subpoena")),
+    ),
+    (
+        "Audio Transcript",
+        (_t("audio transcript"), _t("video transcript"), _t("recording transcript")),
+    ),
 )
 
 # Purely a performance cap on how much text this scans -- not a privacy
