@@ -353,8 +353,101 @@ same read-only-on-write convention.
    message.
 
 **C — Automatic Yahoo import**
-9. Read-only IMAP connectivity (app-password auth) + folder listing +
-   search-by-criteria, returning counts/previews only.
+9. ✅ Read-only IMAP connectivity (app-password auth) + folder listing +
+   search-by-criteria, returning counts/previews only. FERChronos's
+   first live network integration -- see docs/PRIVACY_SECURITY.md §2.1
+   for the full outbound-network-exception writeup.
+
+   `app/core/communications/imap_client.py` is a narrow, protocol-level
+   `ImapClient` with no `Communication`/`CommunicationAccount`
+   dependency of its own: connect/authenticate, list folders, search
+   (always via a fresh read-only `SELECT`), a bounded metadata-only
+   preview fetch, and logout -- there is no method for STORE, COPY,
+   MOVE, EXPUNGE, DELETE, APPEND, or any flag-mutating command; those
+   verbs simply aren't part of the class, not merely unused. Preview
+   fetches use `BODY.PEEK[HEADER.FIELDS (...)]` (never a bare `BODY[...]`,
+   which would mark `\Seen`), so browsing never alters mailbox state on
+   Yahoo's server. Talks to the mailbox through a small `_ImapTransport`
+   protocol rather than `imaplib` directly, resolved against a
+   module-level default at call time (not bound as an ordinary default
+   argument) specifically so tests can substitute an in-process fake
+   transport with zero real network access and zero real Yahoo account
+   -- see `tests/test_communications_imap_client.py::FakeImapTransport`.
+   `app/core/communications/imap_service.py::open_connection()` is the
+   one bridge from a `CommunicationAccount` row to a live, authenticated
+   client: retrieves the app password via the existing
+   `credentials.get_credential()` (Step 2, unchanged), raising
+   `ImapCredentialUnavailableError` without ever touching the network if
+   no credential is currently stored.
+
+   Every error path is mapped to one of five typed exceptions
+   (`ImapCredentialUnavailableError`/`ImapAuthenticationError`/
+   `ImapNetworkError`/`ImapTimeoutError`/`ImapMailboxAccessError`), each
+   with a fixed, safe message string -- never built from a raw server
+   response or from any credential -- so nothing an exception carries can
+   ever leak the app password into a rendered page, a log, or a URL. A
+   failed test-connection or browse attempt never disconnects, deletes,
+   or otherwise modifies the stored `CommunicationAccount` row.
+
+   Search criteria (sender/recipient/cc/subject/keywords/date range) map
+   directly to IMAP's own `FROM`/`TO`/`CC`/`SUBJECT`/`TEXT`/
+   `SENTSINCE`/`SENTBEFORE` search keys -- matched server-side, never by
+   downloading messages and filtering locally. Every text value is
+   quoted via `_quote_astring()`: control characters (in particular
+   CR/LF, which could otherwise inject a second protocol line into the
+   command stream) are stripped, backslash/double-quote are escaped, and
+   non-ASCII is replaced with `?` (this narrow client does not implement
+   IMAP literal/charset framing, so a search term with non-ASCII
+   characters may not match exactly -- a documented limitation, not a
+   silent correctness bug: it degrades to "no match," never to executing
+   something other than the intended command). UID sets passed to FETCH
+   are validated against a strict digits-only pattern before ever being
+   interpolated into a command string.
+
+   **No `has_attachments` search filter.** Yahoo/IMAP has no native,
+   reliable server-side "has an attachment" search key, and
+   approximating one would require fetching each candidate message's
+   full body or structure across the whole mailbox -- exactly the
+   expensive, mailbox-wide download this step is required to avoid. Per
+   this step's own "be conservative about unsupported criteria"
+   instruction, this filter is not implemented; the same applies to an
+   attachment indicator on preview rows (also omitted, for the same
+   reason -- BODYSTRUCTURE inspection was considered and set aside as
+   more parsing-surface risk than an evidentiary tool should carry for a
+   preview-only feature).
+
+   Search is always bounded: `search()` returns Yahoo's true match count
+   (`total_matched`, cheap -- SEARCH returns UIDs, not messages) but only
+   ever fetches preview metadata for a capped page (`limit`, default 25,
+   hard-capped at 200; `offset` for paging) -- never more messages than
+   that page regardless of how large the mailbox-wide match count is.
+   Results are ordered newest-first, matching how the rest of this
+   application always orders communications.
+
+   **UID scope.** An IMAP UID is only unique within its folder --
+   `ImapMessagePreview` always carries `folder` and `uid` together, and
+   nothing in this application treats a UID alone as a durable message
+   identity. This is deliberately the shape a future import step will
+   need to key an "already imported this message" check off
+   `(account, folder, uid)`.
+
+   **Step 10 architecture boundary.** `ImapClient.fetch_raw_message(folder,
+   uid)` exists so a future bulk-import engine can request one message's
+   complete, unmodified RFC822 bytes without this module changing --
+   also via `BODY.PEEK[]`, so even a raw fetch never marks a message
+   read. No Step 9 route calls it, and nothing in Step 9 uses its result
+   to write to the vault, `communications`, or any custody ledger.
+
+   UI: `/communications/{account_id}/test-connection` (POST -- connects,
+   counts folders, disconnects, shows a pass/fail banner on the
+   Communications home page) and `/communications/{account_id}/browse`
+   (GET -- lists real folders dynamically, never a hard-coded
+   Inbox/Sent/Trash guess; folder attributes like `\Sent`/`\Trash`/
+   `\Junk`/`\Drafts`/`\All` are shown when the server provides them
+   rather than relying on display-name guessing alone). The browse page
+   states prominently, in its own words, "No email has been imported
+   yet" and that results are Yahoo mailbox search results only --
+   distinct from evidence already stored in FERChronos.
 10. Bulk import engine (batched/resumable/cancellable/retry-safe) + the
     pre-import review screen + batch case assignment.
 11. Bulk attachment-review screen, built on Step 5's logic.

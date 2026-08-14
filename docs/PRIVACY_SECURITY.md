@@ -52,6 +52,59 @@ a git working tree.**
   libraries, periodic `pip-audit`; specifically review PDF/OCR/email-parsing
   dependencies for any built-in network behavior before adopting them.
 
+### 2.1 Outbound network exception: read-only Yahoo IMAP (Communications
+Phase Step 9)
+
+FERChronos's first, and so far only, outbound network call: reading and
+searching a user's own connected Yahoo mailbox over IMAP, so the
+Communications feature can show what mail exists before importing any
+of it (Step 9) and, later, actually import it (Step 10). This is a
+deliberate, narrow exception to §2 above, not a relaxation of it — every
+other guarantee in this document is unchanged, and the exception itself
+is bounded as follows:
+
+- **User-initiated only, every time.** FERChronos never opens a
+  connection to Yahoo on its own — not at startup, not on a timer, not
+  in the background. A connection is opened only when a human clicks
+  "Test Mailbox Access" or "Browse/Search Yahoo Mail" (or, from Step 10
+  onward, explicitly starts an import). There is no polling, no
+  scheduled sync, and no "keep the connection open and watch for new
+  mail" behavior anywhere in this application.
+- **Host, port, and transport.** `imap.mail.yahoo.com:993`, TLS from the
+  moment the socket opens (`IMAP4_SSL` — there is no plaintext IMAP
+  fallback anywhere in this codebase).
+- **Purpose, narrowly.** Read and search the connected mailbox only.
+  `app/core/communications/imap_client.py` is a narrow wrapper exposing
+  only connect/authenticate, list folders, read-only mailbox selection,
+  search, and a bounded metadata-only preview fetch — there is no method
+  on it for STORE, COPY, MOVE, EXPUNGE, DELETE, APPEND, or any other
+  flag-mutating IMAP command; every mailbox SELECT it issues passes
+  `readonly=True`, and preview/raw-message fetches use `BODY.PEEK` so a
+  message is never marked `\Seen` by merely being previewed. FERChronos
+  cannot modify, delete, move, or mark anything in a connected Yahoo
+  mailbox — not through a bug elsewhere in the app, because the
+  capability to do so does not exist in the code at all.
+- **No telemetry, no cloud AI, anywhere in this path.** The IMAP
+  connection carries only the IMAP protocol itself — no analytics, no
+  usage reporting, no request ever leaves this device except the direct
+  socket to Yahoo's own mail server the user explicitly asked to reach.
+  Nothing fetched from Yahoo is ever sent to any AI/LLM service, cloud
+  or local.
+- **Credentials never leave OS secure storage.** The Yahoo app password
+  is retrieved from the OS-native credential store
+  (`app/core/communications/credentials.py`) only for the duration of
+  one connection, handed directly to the IMAP `LOGIN` command, and never
+  written to SQLite, a log file, an exception message rendered to the
+  user, a URL, or a query parameter. See §3's original-record-integrity
+  guarantees and `docs/COMMUNICATIONS_PLAN.md` §3/§16 for the credential
+  storage design this reuses unchanged.
+- **Step 9 imports nothing.** As of Step 9, browsing and searching a
+  mailbox is inspection only — no `Communication`,
+  `CommunicationAttachment`, vault file, or custody event is ever
+  written by these routes. The UI makes this explicit ("No email has
+  been imported yet") so a search result is never mistaken for evidence
+  already stored in FERChronos.
+
 ## 3. Original record integrity (read-only originals)
 
 - Ingestion always **copies** the source file into `originals/`; the app

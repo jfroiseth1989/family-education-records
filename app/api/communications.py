@@ -1,15 +1,23 @@
-"""Communications routes (Communications Phase Steps 2-6): Yahoo account
-connect/disconnect, manual .eml upload/viewing, email thread views,
-attachment review/promotion to Documents, and Communications search.
+"""Communications routes (Communications Phase Steps 2-9): Yahoo account
+connect/disconnect, manual .eml/.mbox upload/viewing, email thread views,
+attachment review/promotion to Documents, Communications search, and
+(Step 9) read-only Yahoo IMAP mailbox browsing/searching.
 
-No IMAP connectivity or bulk attachment review yet -- see
-docs/COMMUNICATIONS_PLAN.md. Manual upload here is deliberately
-independent of any connected mailbox: it never reads
-`CommunicationAccount`, never checks connection status, and works
-identically whether zero or several Yahoo accounts are connected.
+Manual upload is deliberately independent of any connected mailbox: it
+never reads `CommunicationAccount`, never checks connection status, and
+works identically whether zero or several Yahoo accounts are connected.
 Thread reconstruction (`app/core/communications/thread_rebuild.py`) runs
 automatically inside `import_eml_file()`; these routes only ever read the
 resulting `communication_threads` rows, never write to them.
+
+The Step 9 mailbox-browsing routes below (`test-connection`, `browse`)
+are FERChronos's only outbound network calls, and only ever run when a
+human explicitly requests them (a form submit or a followed link) --
+see docs/PRIVACY_SECURITY.md's "Outbound network exception" section.
+They never write a `Communication`/`CommunicationAttachment` row, never
+write to the vault, and never write a custody event -- Step 9 is
+inspection only; importing what a search finds is Step 10's job, not
+built here.
 """
 
 from __future__ import annotations
@@ -32,6 +40,18 @@ from app.core.communications.attachment_metadata import (
     suggest_source,
 )
 from app.core.communications.credentials import KeyringUnavailableError
+from app.core.communications.imap_client import (
+    DEFAULT_SEARCH_LIMIT,
+    ImapAuthenticationError,
+    ImapCredentialUnavailableError,
+    ImapError,
+    ImapFolder,
+    ImapMailboxAccessError,
+    ImapNetworkError,
+    ImapSearchCriteria,
+    ImapTimeoutError,
+)
+from app.core.communications.imap_service import open_connection
 from app.core.communications.ingestion import DuplicateCommunicationError, import_eml_file
 from app.core.communications.mbox_import import import_mbox_file
 from app.core.communications.promotion import (
@@ -103,6 +123,9 @@ def _home_context(
     upload_error: str | None = None,
     mbox_error: str | None = None,
     mbox_message: str | None = None,
+    mailbox_test_account_id: int | None = None,
+    mailbox_test_message: str | None = None,
+    mailbox_test_ok: bool | None = None,
 ) -> dict:
     return {
         "accounts": _list_accounts(db),
@@ -112,7 +135,47 @@ def _home_context(
         "upload_error": upload_error,
         "mbox_error": mbox_error,
         "mbox_message": mbox_message,
+        "mailbox_test_account_id": mailbox_test_account_id,
+        "mailbox_test_message": mailbox_test_message,
+        "mailbox_test_ok": mailbox_test_ok,
     }
+
+
+# Every message here is a fixed, safe string -- never built from a raw
+# server response or from any credential -- see imap_client.py's module
+# docstring. (ImapError itself is the fallback for the one unnamed
+# base-class case: `_require_connected()`'s "not connected" -- unreachable
+# from any route below, since every route always connects first, but
+# handled to satisfy "never let a raw exception reach the user" anyway.)
+_IMAP_ERROR_MESSAGES: tuple[tuple[type[ImapError], str], ...] = (
+    (
+        ImapCredentialUnavailableError,
+        "No secure credential is currently stored for this account. Reconnect this Yahoo account to continue.",
+    ),
+    (ImapAuthenticationError, "Yahoo rejected the app password for this account. Reconnect with a fresh app password."),
+    (ImapTimeoutError, "The mail server did not respond in time. Try again in a moment."),
+    (ImapNetworkError, "Could not reach Yahoo's mail server. Check your network connection and try again."),
+    (ImapMailboxAccessError, "Yahoo's mail server could not complete this request."),
+)
+
+
+def _safe_imap_message(exc: ImapError) -> str:
+    for error_type, message in _IMAP_ERROR_MESSAGES:
+        if isinstance(exc, error_type):
+            return message
+    return "Could not complete this mailbox request."
+
+
+def _imap_status_code(exc: ImapError) -> int:
+    if isinstance(exc, ImapCredentialUnavailableError):
+        return 400
+    if isinstance(exc, ImapAuthenticationError):
+        return 401
+    if isinstance(exc, ImapTimeoutError):
+        return 504
+    if isinstance(exc, ImapNetworkError):
+        return 503
+    return 502
 
 
 @router.get("", response_class=HTMLResponse)
@@ -176,6 +239,170 @@ def post_disconnect_account(
 
     disconnect_account(db, account)
     return RedirectResponse(url="/communications", status_code=303)
+
+
+def _get_connected_account_or_404(db: Session, account_id: int) -> CommunicationAccount:
+    account = db.get(CommunicationAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    if account.status != "connected":
+        raise HTTPException(status_code=400, detail="This account is disconnected.")
+    return account
+
+
+@router.post("/{account_id}/test-connection", response_class=HTMLResponse)
+def post_test_mailbox_connection(
+    account_id: int, request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """Explicitly, on the user's request only, open one read-only IMAP
+    connection to prove the stored app password still works and count
+    the account's folders -- then immediately log out. Never reads a
+    message, never writes anything to `communications`, the vault, or
+    any custody ledger. A failed test never touches the stored account
+    row -- see `_get_connected_account_or_404`/`open_connection`'s
+    docstrings; a bad app password, an unreachable network, or a
+    disconnected keyring entry all leave `communication_accounts`
+    completely unchanged.
+    """
+    account = _get_connected_account_or_404(db, account_id)
+
+    templates = request.app.state.templates
+    try:
+        client = open_connection(account)
+        try:
+            folder_count = len(client.list_folders())
+        finally:
+            client.logout()
+    except ImapError as exc:
+        return templates.TemplateResponse(
+            request,
+            "communications_home.html",
+            _home_context(
+                db,
+                mailbox_test_account_id=account_id,
+                mailbox_test_ok=False,
+                mailbox_test_message=_safe_imap_message(exc),
+            ),
+            status_code=_imap_status_code(exc),
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "communications_home.html",
+        _home_context(
+            db,
+            mailbox_test_account_id=account_id,
+            mailbox_test_ok=True,
+            mailbox_test_message=f"Connected successfully. Found {folder_count} folder(s).",
+        ),
+    )
+
+
+def _browse_context(
+    db: Session,
+    account: CommunicationAccount,
+    *,
+    folders: list[ImapFolder] | None,
+    criteria: ImapSearchCriteria | None,
+    result=None,
+    error: str | None = None,
+) -> dict:
+    return {
+        "account": account,
+        "folders": folders or [],
+        "criteria": criteria,
+        "result": result,
+        "error": error,
+        "default_limit": DEFAULT_SEARCH_LIMIT,
+    }
+
+
+@router.get("/{account_id}/browse", response_class=HTMLResponse)
+def get_browse_mailbox(
+    account_id: int,
+    request: Request,
+    folder: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sender: str = Query(""),
+    recipient: str = Query(""),
+    cc: str = Query(""),
+    subject: str = Query(""),
+    keywords: str = Query(""),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Read-only Yahoo mailbox browsing/searching (Communications Phase
+    Step 9) -- inspection only. Loading this page is itself the one
+    explicit user action that opens a live IMAP connection: it always
+    lists the account's real folders (so the folder selector reflects
+    this specific mailbox, never a hard-coded Inbox/Sent guess), and
+    additionally runs a search when a folder has been chosen.
+
+    Every result shown here is metadata/preview only, fetched with
+    `BODY.PEEK` so nothing is marked read on Yahoo's server -- nothing
+    from this route is ever written to `communications`,
+    `communication_attachments`, the vault, or any custody ledger. See
+    the module docstring.
+    """
+    account = _get_connected_account_or_404(db, account_id)
+    templates = request.app.state.templates
+
+    try:
+        client = open_connection(account)
+    except ImapError as exc:
+        return templates.TemplateResponse(
+            request,
+            "communication_browse.html",
+            _browse_context(db, account, folders=None, criteria=None, error=_safe_imap_message(exc)),
+            status_code=_imap_status_code(exc),
+        )
+
+    try:
+        try:
+            folders = client.list_folders()
+        except ImapError as exc:
+            return templates.TemplateResponse(
+                request,
+                "communication_browse.html",
+                _browse_context(db, account, folders=None, criteria=None, error=_safe_imap_message(exc)),
+                status_code=_imap_status_code(exc),
+            )
+
+        if not folder.strip():
+            return templates.TemplateResponse(
+                request, "communication_browse.html", _browse_context(db, account, folders=folders, criteria=None)
+            )
+
+        criteria = ImapSearchCriteria(
+            folder=folder.strip(),
+            date_from=_parse_optional_date(date_from.strip(), "date_from"),
+            date_to=_parse_optional_date(date_to.strip(), "date_to"),
+            sender=sender,
+            recipient=recipient,
+            cc=cc,
+            subject=subject,
+            keywords=keywords,
+            limit=DEFAULT_SEARCH_LIMIT,
+            offset=max(0, offset),
+        )
+        try:
+            result = client.search(criteria)
+        except ImapError as exc:
+            return templates.TemplateResponse(
+                request,
+                "communication_browse.html",
+                _browse_context(db, account, folders=folders, criteria=criteria, error=_safe_imap_message(exc)),
+                status_code=_imap_status_code(exc),
+            )
+
+        return templates.TemplateResponse(
+            request,
+            "communication_browse.html",
+            _browse_context(db, account, folders=folders, criteria=criteria, result=result),
+        )
+    finally:
+        client.logout()
 
 
 @router.post("/upload")

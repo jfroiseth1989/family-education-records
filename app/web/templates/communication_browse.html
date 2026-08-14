@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Browse Yahoo Mail — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>Browse/Search Yahoo Mail</h1>
+  <p class="hint auth-error">
+    <strong>No email has been imported yet.</strong> This page only looks
+    at your Yahoo mailbox directly, read-only -- nothing shown below is
+    stored in FERChronos. Do not confuse these results with evidence
+    already saved here; importing a message is a separate, later step.
+  </p>
+  <p class="hint">
+    Account: {{ account.email_address }}. Loading this page, and each
+    search, opens one explicit, read-only connection to Yahoo -- nothing
+    here ever runs automatically or in the background, and nothing here
+    can modify, delete, or mark mail as read on Yahoo's server.
+  </p>
+
+  {% if error %}
+    <p class="hint auth-error">{{ error }}</p>
+  {% endif %}
+
+  {% if folders %}
+    <section class="panel">
+      <form method="get" action="/communications/{{ account.account_id }}/browse">
+        <label>
+          Folder
+          <select name="folder" required>
+            <option value="">Select…</option>
+            {% for f in folders %}
+              {% if f.is_selectable %}
+                <option value="{{ f.name }}" {% if criteria and criteria.folder == f.name %}selected{% endif %}>
+                  {{ f.display_name }}
+                  {% if "\\Sent" in f.attributes %}(Sent){% endif %}
+                  {% if "\\Trash" in f.attributes %}(Trash){% endif %}
+                  {% if "\\Junk" in f.attributes %}(Junk){% endif %}
+                  {% if "\\Drafts" in f.attributes %}(Drafts){% endif %}
+                  {% if "\\All" in f.attributes %}(All Mail){% endif %}
+                </option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          From (sender)
+          <input type="text" name="sender" value="{{ criteria.sender if criteria else '' }}" placeholder="name or email address">
+        </label>
+        <label>
+          To (recipient)
+          <input type="text" name="recipient" value="{{ criteria.recipient if criteria else '' }}" placeholder="email address">
+        </label>
+        <label>
+          Cc
+          <input type="text" name="cc" value="{{ criteria.cc if criteria else '' }}" placeholder="email address">
+        </label>
+        <label>
+          Subject contains
+          <input type="text" name="subject" value="{{ criteria.subject if criteria else '' }}">
+        </label>
+        <label>
+          Keywords (subject + body text)
+          <input type="text" name="keywords" value="{{ criteria.keywords if criteria else '' }}">
+        </label>
+        <label>
+          Date from
+          <input type="date" name="date_from" value="{{ criteria.date_from if criteria else '' }}">
+        </label>
+        <label>
+          Date to
+          <input type="date" name="date_to" value="{{ criteria.date_to if criteria else '' }}">
+        </label>
+        <p class="hint">
+          Attachment filtering isn't offered here: Yahoo's mail server has
+          no reliable way to search for "has an attachment" without
+          downloading each candidate message, which this page deliberately
+          avoids doing across a whole mailbox.
+        </p>
+        <button type="submit">Search</button>
+      </form>
+    </section>
+  {% endif %}
+
+  {% if result %}
+    <section class="panel panel-section-gap">
+      <h2>
+        Results: showing {{ result.previews | length }} of {{ result.total_matched }} match(es)
+        in {{ criteria.folder }}
+      </h2>
+      {% if result.previews %}
+        <table class="data-table">
+          <thead><tr><th>Subject</th><th>From</th><th>To</th><th>Cc</th><th>Date</th><th>Folder UID</th></tr></thead>
+          <tbody>
+            {% for preview in result.previews %}
+              <tr>
+                <td>{{ preview.subject or "(no subject)" }}</td>
+                <td>{{ preview.from_display_name or preview.from_address or "—" }}</td>
+                <td>{{ preview.to_addresses | join(", ") or "—" }}</td>
+                <td>{{ preview.cc_addresses | join(", ") or "—" }}</td>
+                <td>{{ preview.date or "—" }}</td>
+                <td><code>{{ preview.folder }} / {{ preview.uid }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if result.truncated %}
+          <p class="hint">
+            More matches exist than are shown here. Narrow your search
+            criteria to see a different page of results.
+          </p>
+        {% endif %}
+      {% else %}
+        <p class="empty-state">No matches found for this search and folder.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

@@ -33,6 +33,11 @@
               <td>{{ account.disconnected_at or "—" }}</td>
               <td>
                 {% if account.status == "connected" %}
+                  <form method="post" action="/communications/{{ account.account_id }}/test-connection" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+                    <button type="submit" class="btn-secondary">Test Mailbox Access</button>
+                  </form>
+                  <a href="/communications/{{ account.account_id }}/browse" class="btn-secondary">Browse/Search Yahoo Mail</a>
                   <form method="post" action="/communications/{{ account.account_id }}/disconnect" style="display:inline">
                     <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
                     <button type="submit" class="btn-secondary">Disconnect</button>
@@ -40,6 +45,13 @@
                 {% endif %}
               </td>
             </tr>
+            {% if mailbox_test_account_id == account.account_id %}
+              <tr>
+                <td colspan="6">
+                  <p class="hint {{ 'auth-error' if not mailbox_test_ok }}">{{ mailbox_test_message }}</p>
+                </td>
+              </tr>
+            {% endif %}
           {% endfor %}
         </tbody>
       </table>
