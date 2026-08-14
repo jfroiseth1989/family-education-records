@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Import Batch — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>Import Batch #{{ batch.batch_id }}</h1>
+  <p class="hint">
+    {{ batch.account.email_address }} &middot; Student: {{ batch.case.display_name if batch.case else "—" }}
+  </p>
+
+  <section class="panel">
+    <h2>
+      Status:
+      <span class="status-badge {% if batch.status in ('completed',) %}status-current{% elif batch.status in ('failed', 'cancelled') %}status-superseded{% endif %}">
+        {{ batch.status }}
+      </span>
+    </h2>
+    <table class="data-table">
+      <thead><tr><th>Matched</th><th>Imported</th><th>Skipped duplicates</th><th>Failed</th><th>Remaining</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>{{ batch.matched_count }}</td>
+          <td>{{ batch.imported_count }}</td>
+          <td>{{ batch.skipped_duplicate_count }}</td>
+          <td>{{ batch.failed_count }}</td>
+          <td>{{ remaining }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="hint">
+      Created {{ batch.created_at }}
+      {% if batch.started_at %} &middot; Started {{ batch.started_at }}{% endif %}
+      {% if batch.finished_at %} &middot; Finished {{ batch.finished_at }}{% endif %}
+    </p>
+
+    <p>
+      <a href="/communications/import-batches/{{ batch.batch_id }}">Refresh</a>
+    </p>
+
+    {% if batch.status in ("pending", "running") %}
+      <form method="post" action="/communications/import-batches/{{ batch.batch_id }}/cancel" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <button type="submit" class="btn-secondary">Cancel</button>
+      </form>
+    {% endif %}
+    {% if batch.status == "failed" %}
+      <form method="post" action="/communications/import-batches/{{ batch.batch_id }}/resume" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <button type="submit" class="btn-secondary">Resume</button>
+      </form>
+    {% endif %}
+    {% if batch.failed_count > 0 %}
+      <form method="post" action="/communications/import-batches/{{ batch.batch_id }}/retry-failed" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+        <button type="submit" class="btn-secondary">Retry Failed</button>
+      </form>
+    {% endif %}
+
+    {% if batch.status == "cancelled" %}
+      <p class="hint">
+        Cancelled -- messages already imported above are kept; the
+        remaining {{ remaining }} message(s) were never fetched from
+        Yahoo and stay unselected.
+      </p>
+    {% endif %}
+    {% if batch.status == "failed" %}
+      <p class="hint auth-error">
+        Stopped because of a problem with the mailbox connection itself
+        (not any one message) -- check the account is still connected
+        with a valid app password, then press Resume to continue from
+        where this left off.
+      </p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Messages in this batch</h2>
+    {% if items %}
+      <table class="data-table">
+        <thead><tr><th>Folder</th><th>UID</th><th>Status</th><th>Communication</th><th>Error</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td>{{ item.mailbox_folder }}</td>
+              <td>{{ item.mailbox_uid }}</td>
+              <td>
+                <span class="status-badge {% if item.status == 'imported' %}status-current{% elif item.status == 'failed' %}status-superseded{% endif %}">
+                  {{ item.status }}
+                </span>
+              </td>
+              <td>
+                {% if item.communication_id %}
+                  <a href="/communications/email/{{ item.communication_id }}">View</a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ item.error or "" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No messages in this batch.</p>
+    {% endif %}
+  </section>
+{% endblock %}

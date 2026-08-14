@@ -131,17 +131,33 @@ class FakeImapTransport:
         return ("OK", [line])
 
     def _fetch(self, args):
-        uid_set, _spec = args
+        """Mirrors real IMAP FETCH: a `BODY.PEEK[]` spec (Step 10's
+        `fetch_raw_message()`) returns the complete raw message; a
+        `BODY.PEEK[HEADER.FIELDS (...)]` spec (Step 9's preview fetch)
+        returns only the requested header block. Getting this branch
+        right matters -- a fetch that silently returned headers-only for
+        a full-message request would make every Step 10 duplicate-
+        detection test believe two genuinely-identical messages were
+        different (different bytes -> different hash), which is exactly
+        the bug this fake exists to keep the real code honest about.
+        """
+        uid_set, spec = args
         requested = {int(u) for u in uid_set.split(",")}
         messages = dict(self.mailboxes.get(self.selected_folder, []))
+        wants_full_body = "HEADER.FIELDS" not in spec
         data = []
         for uid in sorted(requested):
             raw = messages.get(uid)
             if raw is None:
                 continue
-            headers = _extract_headers(raw)
-            meta = f"{uid} (UID {uid} BODY[HEADER.FIELDS (FROM TO CC SUBJECT DATE)] {{{len(headers)}}}".encode()
-            data.append((meta, headers))
+            if wants_full_body:
+                content = raw
+                spec_label = "BODY[]"
+            else:
+                content = _extract_headers(raw)
+                spec_label = "BODY[HEADER.FIELDS (FROM TO CC SUBJECT DATE)]"
+            meta = f"{uid} (UID {uid} {spec_label} {{{len(content)}}}".encode()
+            data.append((meta, content))
             data.append(b")")
         return ("OK", data)
 
@@ -608,18 +624,11 @@ def test_fetch_raw_message_uses_peek_and_returns_full_bytes(patch_transport):
     uid, raw = _eml(uid=7, sender="a@b.com", body="Full raw body text.")
     mailboxes = {"INBOX": [(uid, raw)]}
     transport = FakeImapTransport(valid_credentials=("a@b.com", "pw"), mailboxes=mailboxes)
-
-    def fetch_full(args):
-        uid_set, spec = args
-        assert "BODY.PEEK[]" in spec
-        return ("OK", [(f"{uid} FETCH".encode(), raw), b")"])
-
-    original_fetch = transport._fetch
-    transport._fetch = lambda args: fetch_full(args) if "BODY.PEEK[]" in args[1] else original_fetch(args)
     patch_transport(transport)
 
     client = _client()
     client.connect_and_authenticate("a@b.com", "pw")
     result = client.fetch_raw_message("INBOX", "7")
     assert result == raw
+    assert any(c[0] == "UID" and c[1] == "FETCH" and "BODY.PEEK[]" in c[2][1] for c in transport.commands)
     client.logout()

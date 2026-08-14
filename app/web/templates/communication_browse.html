@@ -87,21 +87,60 @@
         in {{ criteria.folder }}
       </h2>
       {% if result.previews %}
-        <table class="data-table">
-          <thead><tr><th>Subject</th><th>From</th><th>To</th><th>Cc</th><th>Date</th><th>Folder UID</th></tr></thead>
-          <tbody>
-            {% for preview in result.previews %}
+        {% if not cases %}
+          <p class="hint">Add a student first to import any of these messages -- browsing/searching itself needs no student selected.</p>
+        {% endif %}
+        <form method="post" action="/communications/{{ account.account_id }}/import-batches">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <input type="hidden" name="folder" value="{{ criteria.folder }}">
+          <input type="hidden" name="sender" value="{{ criteria.sender }}">
+          <input type="hidden" name="recipient" value="{{ criteria.recipient }}">
+          <input type="hidden" name="cc" value="{{ criteria.cc }}">
+          <input type="hidden" name="subject" value="{{ criteria.subject }}">
+          <input type="hidden" name="keywords" value="{{ criteria.keywords }}">
+          <input type="hidden" name="date_from" value="{{ criteria.date_from or '' }}">
+          <input type="hidden" name="date_to" value="{{ criteria.date_to or '' }}">
+          {% if cases %}
+            <p class="hint">
+              Selecting messages below and pressing Start Import does not
+              contact Yahoo immediately from this page -- it queues a
+              bulk-import batch that a background process works through,
+              one message at a time, so this page never has to stay open
+              or wait for hundreds of messages to finish importing.
+            </p>
+            <label>
+              Import selected messages for student
+              <select name="case_id" required>
+                <option value="">Select…</option>
+                {% for case in cases %}
+                  <option value="{{ case.case_id }}">{{ case.display_name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          {% endif %}
+          <table class="data-table">
+            <thead>
               <tr>
-                <td>{{ preview.subject or "(no subject)" }}</td>
-                <td>{{ preview.from_display_name or preview.from_address or "—" }}</td>
-                <td>{{ preview.to_addresses | join(", ") or "—" }}</td>
-                <td>{{ preview.cc_addresses | join(", ") or "—" }}</td>
-                <td>{{ preview.date or "—" }}</td>
-                <td><code>{{ preview.folder }} / {{ preview.uid }}</code></td>
+                {% if cases %}<th><input type="checkbox" id="select-all-uids" onclick="document.querySelectorAll('.uid-checkbox').forEach(function(cb){cb.checked=this.checked;}, this)"></th>{% endif %}
+                <th>Subject</th><th>From</th><th>To</th><th>Cc</th><th>Date</th><th>Folder UID</th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {% for preview in result.previews %}
+                <tr>
+                  {% if cases %}<td><input type="checkbox" class="uid-checkbox" name="uid" value="{{ preview.uid }}"></td>{% endif %}
+                  <td>{{ preview.subject or "(no subject)" }}</td>
+                  <td>{{ preview.from_display_name or preview.from_address or "—" }}</td>
+                  <td>{{ preview.to_addresses | join(", ") or "—" }}</td>
+                  <td>{{ preview.cc_addresses | join(", ") or "—" }}</td>
+                  <td>{{ preview.date or "—" }}</td>
+                  <td><code>{{ preview.folder }} / {{ preview.uid }}</code></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% if cases %}<button type="submit">Start Import</button>{% endif %}
+        </form>
         {% if result.truncated %}
           <p class="hint">
             More matches exist than are shown here. Narrow your search

@@ -52,6 +52,14 @@ from app.core.communications.imap_client import (
     ImapTimeoutError,
 )
 from app.core.communications.imap_service import open_connection
+from app.core.communications.import_batches import (
+    BatchValidationError,
+    count_remaining,
+    create_batch,
+    request_cancel,
+    resume_batch,
+    retry_failed_items,
+)
 from app.core.communications.ingestion import DuplicateCommunicationError, import_eml_file
 from app.core.communications.mbox_import import import_mbox_file
 from app.core.communications.promotion import (
@@ -70,6 +78,8 @@ from app.db.models import (
     CommunicationAccount,
     CommunicationAttachment,
     CommunicationDocumentLink,
+    CommunicationImportBatch,
+    CommunicationImportBatchItem,
     CommunicationThread,
     DocumentType,
     VerifiedFact,
@@ -116,6 +126,14 @@ def _save_upload_to_temp(upload: UploadFile) -> Path:
         return Path(tmp.name)
 
 
+def _list_recent_import_batches(db: Session, limit: int = 20) -> list[CommunicationImportBatch]:
+    return list(
+        db.scalars(
+            select(CommunicationImportBatch).order_by(CommunicationImportBatch.created_at.desc()).limit(limit)
+        ).all()
+    )
+
+
 def _home_context(
     db: Session,
     *,
@@ -138,6 +156,7 @@ def _home_context(
         "mailbox_test_account_id": mailbox_test_account_id,
         "mailbox_test_message": mailbox_test_message,
         "mailbox_test_ok": mailbox_test_ok,
+        "import_batches": _list_recent_import_batches(db),
     }
 
 
@@ -314,6 +333,7 @@ def _browse_context(
         "result": result,
         "error": error,
         "default_limit": DEFAULT_SEARCH_LIMIT,
+        "cases": _list_cases(db),
     }
 
 
@@ -403,6 +423,127 @@ def get_browse_mailbox(
         )
     finally:
         client.logout()
+
+
+# --- bulk import batches (Communications Phase Step 10) ---------------------
+
+
+@router.post("/{account_id}/import-batches")
+def post_create_import_batch(
+    account_id: int,
+    request: Request,
+    folder: str = Form(""),
+    uid: list[str] = Form([]),
+    case_id: str = Form(""),
+    sender: str = Form(""),
+    recipient: str = Form(""),
+    cc: str = Form(""),
+    subject: str = Form(""),
+    keywords: str = Form(""),
+    date_from: str = Form(""),
+    date_to: str = Form(""),
+    db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
+):
+    """Create a bulk-import batch from a set of messages selected on the
+    browse/search page and immediately press "Start Import." Creating
+    the batch is the one explicit user action Step 10 requires --
+    actually fetching any message from Yahoo happens afterward, in the
+    background worker (app/jobs/import_worker.py), driven only by the
+    batch this route writes, never by this request itself opening an
+    IMAP connection. No `Communication` row exists yet when this route
+    returns.
+    """
+    account = _get_connected_account_or_404(db, account_id)
+
+    if not case_id.strip() or not case_id.strip().isdigit():
+        raise HTTPException(status_code=400, detail="A student must be selected.")
+    case = db.get(Case, int(case_id))
+    if case is None:
+        raise HTTPException(status_code=400, detail="Selected student was not found.")
+
+    if not folder.strip():
+        raise HTTPException(status_code=400, detail="No folder was selected.")
+
+    search_criteria = {
+        "folder": folder,
+        "sender": sender,
+        "recipient": recipient,
+        "cc": cc,
+        "subject": subject,
+        "keywords": keywords,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+
+    try:
+        batch = create_batch(
+            db,
+            account,
+            case,
+            items=[(folder, u) for u in uid],
+            search_criteria=search_criteria,
+            actor=actor,
+        )
+    except BatchValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RedirectResponse(url=f"/communications/import-batches/{batch.batch_id}", status_code=303)
+
+
+def _get_batch_or_404(db: Session, batch_id: int) -> CommunicationImportBatch:
+    batch = db.get(CommunicationImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"Import batch {batch_id} not found.")
+    return batch
+
+
+@router.get("/import-batches/{batch_id}", response_class=HTMLResponse)
+def get_import_batch_status(batch_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """A plain, manually-refreshed status page -- deliberately no
+    auto-refresh/polling JavaScript, matching the OCR jobs page's own
+    precedent and Step 10's "no background polling" requirement in
+    spirit as well as letter.
+    """
+    batch = _get_batch_or_404(db, batch_id)
+    items = list(
+        db.scalars(
+            select(CommunicationImportBatchItem)
+            .where(CommunicationImportBatchItem.batch_id == batch_id)
+            .order_by(CommunicationImportBatchItem.item_id)
+        ).all()
+    )
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communication_import_batch.html",
+        {
+            "batch": batch,
+            "items": items,
+            "remaining": count_remaining(db, batch),
+        },
+    )
+
+
+@router.post("/import-batches/{batch_id}/cancel")
+def post_cancel_import_batch(batch_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    batch = _get_batch_or_404(db, batch_id)
+    request_cancel(db, batch)
+    return RedirectResponse(url=f"/communications/import-batches/{batch_id}", status_code=303)
+
+
+@router.post("/import-batches/{batch_id}/resume")
+def post_resume_import_batch(batch_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    batch = _get_batch_or_404(db, batch_id)
+    resume_batch(db, batch)
+    return RedirectResponse(url=f"/communications/import-batches/{batch_id}", status_code=303)
+
+
+@router.post("/import-batches/{batch_id}/retry-failed")
+def post_retry_failed_import_batch_items(batch_id: int, db: Session = Depends(get_db)) -> RedirectResponse:
+    batch = _get_batch_or_404(db, batch_id)
+    retry_failed_items(db, batch)
+    return RedirectResponse(url=f"/communications/import-batches/{batch_id}", status_code=303)
 
 
 @router.post("/upload")

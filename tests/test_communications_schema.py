@@ -304,12 +304,17 @@ def test_import_batch_and_resumable_items(db_session: Session, sample_case: Case
         [
             CommunicationImportBatchItem(
                 batch_id=batch.batch_id,
+                mailbox_folder="INBOX",
                 mailbox_uid="101",
                 status="imported",
                 communication_id=imported.communication_id,
             ),
-            CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_uid="102", status="skipped_duplicate"),
-            CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_uid="103", status="pending"),
+            CommunicationImportBatchItem(
+                batch_id=batch.batch_id, mailbox_folder="INBOX", mailbox_uid="102", status="skipped_duplicate"
+            ),
+            CommunicationImportBatchItem(
+                batch_id=batch.batch_id, mailbox_folder="INBOX", mailbox_uid="103", status="pending"
+            ),
         ]
     )
     db_session.commit()
@@ -322,15 +327,28 @@ def test_import_batch_and_resumable_items(db_session: Session, sample_case: Case
 
 
 def test_import_batch_item_uid_unique_within_batch(db_session: Session, sample_case: Case):
+    """A UID is only unique within its own folder (Communications Phase
+    Step 9) -- the same UID in a *different* folder of the same batch
+    must not collide, only a true repeat of (folder, uid) should."""
     account = _account(db_session)
     batch = CommunicationImportBatch(account_id=account.account_id, status="running", created_by="test-user")
     db_session.add(batch)
     db_session.flush()
 
-    db_session.add(CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_uid="1", status="pending"))
+    db_session.add(
+        CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_folder="INBOX", mailbox_uid="1", status="pending")
+    )
     db_session.commit()
 
-    db_session.add(CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_uid="1", status="pending"))
+    db_session.add(
+        CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_folder="INBOX", mailbox_uid="1", status="pending")
+    )
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()
+
+    # Same UID, different folder -- must be accepted, not treated as a duplicate.
+    db_session.add(
+        CommunicationImportBatchItem(batch_id=batch.batch_id, mailbox_folder="Sent", mailbox_uid="1", status="pending")
+    )
+    db_session.commit()

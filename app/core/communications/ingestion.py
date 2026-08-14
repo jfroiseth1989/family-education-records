@@ -91,26 +91,40 @@ def import_eml_file(
     actor: str,
     import_method: str = "manual_upload",
     custody_details: dict | None = None,
+    account_id: int | None = None,
+    mailbox_folder: str | None = None,
+    mailbox_uid: str | None = None,
 ) -> Communication:
-    """Parse, hash, and copy `source_file_path` (a `.eml` file, or one
+    """Parse, hash, and copy `source_file_path` (a `.eml` file, one
     message's raw RFC822 bytes extracted unmodified from an mbox archive
-    -- see app/core/communications/mbox_import.py, Communications Phase
-    Step 8) into the vault, registering it as a new `Communication` with
-    its attachments.
+    -- app/core/communications/mbox_import.py, Communications Phase
+    Step 8 -- or one message's raw RFC822 bytes fetched unmodified from a
+    connected mailbox over IMAP -- app/core/communications/imap_import.py,
+    Communications Phase Step 10) into the vault, registering it as a new
+    `Communication` with its attachments.
 
     Never modifies or deletes `source_file_path` -- opened for reading
     only. Raises `DuplicateCommunicationError` (without importing
-    anything) if an identical message already exists. `import_method`
-    and `custody_details` are additive, optional overrides -- every
-    pre-Step-8 caller leaves them at their defaults and sees no change
-    in behavior. Does not commit; the caller controls the transaction
-    boundary.
+    anything) if an identical message already exists -- for an
+    IMAP-sourced import, `account_id` scopes that dedup check the same
+    way `Communication.account_id`'s own docstring always intended:
+    "only IMAP-synced messages ever set it." `import_method`/
+    `custody_details` (Step 8) and `account_id`/`mailbox_folder`/
+    `mailbox_uid` (Step 10) are additive, optional overrides -- every
+    caller that predates them leaves them at their defaults (`None`) and
+    sees no change in behavior. `mailbox_folder`/`mailbox_uid` are always
+    set together or not at all -- a UID is only unique within its own
+    folder (Communications Phase Step 9), so this application never
+    records one without the other. Does not commit; the caller controls
+    the transaction boundary.
     """
     parsed = parse_message(source_file_path)
     file_hash = compute_sha256(source_file_path)
     file_size = source_file_path.stat().st_size
 
-    existing = _find_duplicate(db, account_id=None, message_id=parsed.message_id, file_hash=file_hash)
+    existing = _find_duplicate(
+        db, account_id=account_id, message_id=parsed.message_id, file_hash=file_hash
+    )
     if existing is not None:
         raise DuplicateCommunicationError(existing)
 
@@ -120,7 +134,7 @@ def import_eml_file(
     relative_stored_path = str(destination.relative_to(vault.root))
 
     communication = Communication(
-        account_id=None,
+        account_id=account_id,
         case_id=case.case_id,
         communication_type="email",
         subject=parsed.subject,
@@ -139,6 +153,8 @@ def import_eml_file(
         sha256_hash=file_hash,
         stored_path=relative_stored_path,
         file_size_bytes=file_size,
+        mailbox_uid=mailbox_uid,
+        mailbox_folder=mailbox_folder,
         import_method=import_method,
         imported_by=actor,
     )

@@ -178,6 +178,37 @@
   </section>
 
   <section class="panel panel-section-gap">
+    <h2>Recent Import Batches</h2>
+    <p class="hint">
+      Bulk imports started from Browse/Search Yahoo Mail. A background
+      process works through each batch's messages -- reload a batch's
+      page to see updated progress.
+    </p>
+    {% if import_batches %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Account</th><th>Student</th><th>Status</th><th>Imported</th><th>Skipped</th><th>Failed</th><th>Created</th></tr>
+        </thead>
+        <tbody>
+          {% for batch in import_batches %}
+            <tr>
+              <td>{{ batch.account.email_address if batch.account else "—" }}</td>
+              <td>{{ batch.case.display_name if batch.case else "—" }}</td>
+              <td><a href="/communications/import-batches/{{ batch.batch_id }}">{{ batch.status }}</a></td>
+              <td>{{ batch.imported_count }}</td>
+              <td>{{ batch.skipped_duplicate_count }}</td>
+              <td>{{ batch.failed_count }}</td>
+              <td>{{ batch.created_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No import batches started yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel panel-section-gap">
     <h2>All Communications</h2>
     <p class="hint">
       <a href="/communications/threads">View Email Threads &rarr;</a>

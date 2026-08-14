@@ -44,6 +44,7 @@ from app.db.migrate import run_migrations
 from app.db.models import AppSession, Case
 from app.db.seed import seed_annotation_types, seed_document_types, seed_event_types, seed_fact_types
 from app.db.session import make_engine, make_session_factory
+from app.jobs.import_worker import run_import_worker_loop
 from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -135,6 +136,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker_thread.start()
         app.state.ocr_worker_thread = worker_thread
         app.state.ocr_worker_stop_event = stop_event
+
+        # A second, independent daemon thread for bulk Yahoo import
+        # batches (Communications Phase Step 10) -- same pattern, same
+        # settings flag, but its own thread/stop_event rather than
+        # sharing the OCR worker's: OCR and Communications are unrelated
+        # domains, and no crash-recovery sweep is needed here before
+        # starting it -- see app/jobs/import_worker.py's module
+        # docstring for why an import batch left `running` by a prior
+        # crash is already safely resumable without one.
+        import_stop_event = threading.Event()
+        import_worker_thread = threading.Thread(
+            target=run_import_worker_loop,
+            args=(session_factory, vault, import_stop_event),
+            daemon=True,
+        )
+        import_worker_thread.start()
+        app.state.import_worker_thread = import_worker_thread
+        app.state.import_worker_stop_event = import_stop_event
 
     app.mount("/static", StaticFiles(directory=BASE_DIR / "web" / "static"), name="static")
     app.state.templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")

@@ -1697,25 +1697,37 @@ class CommunicationImportBatchItem(Base):
     """One matched mailbox message within a `CommunicationImportBatch` --
     the unit of work that makes resumable/retry-safe bulk import possible.
 
-    See the Communications plan §14. On restart, the (not-yet-built)
-    import worker resumes by selecting `status == "pending"` items for an
+    See the Communications plan §14. On restart, the import worker
+    (Step 10) resumes by selecting `status == "pending"` items for an
     in-progress batch and continuing -- already-`imported`/
     `skipped_duplicate` items are never re-touched, so an interruption
     never requires restarting the whole batch. `communication_id` is set
     once this item results in a real `Communication` row (or left null for
     `skipped_duplicate`/`failed`). Mutable in place, same justification as
     `CommunicationImportBatch` itself.
+
+    `mailbox_folder` was added in Step 10, alongside `mailbox_uid` --
+    Communications Phase Step 9 established that an IMAP UID is only
+    unique *within its folder*, never globally, so an item's durable
+    mailbox identity is always `(mailbox_folder, mailbox_uid)` together,
+    never `mailbox_uid` alone (see app/core/communications/
+    imap_client.py's module docstring). The unique constraint below
+    matches: two different folders can legitimately contain the same
+    numeric UID without colliding as "the same item" in this table.
     """
 
     __tablename__ = "communication_import_batch_items"
     __table_args__ = (
-        UniqueConstraint("batch_id", "mailbox_uid", name="uq_import_batch_item_uid"),
+        UniqueConstraint(
+            "batch_id", "mailbox_folder", "mailbox_uid", name="uq_import_batch_item_folder_uid"
+        ),
     )
 
     item_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     batch_id: Mapped[int] = mapped_column(
         ForeignKey("communication_import_batches.batch_id"), nullable=False
     )
+    mailbox_folder: Mapped[str] = mapped_column(String(200), nullable=False)
     mailbox_uid: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # pending / imported / skipped_duplicate / failed

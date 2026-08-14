@@ -448,12 +448,95 @@ same read-only-on-write convention.
    states prominently, in its own words, "No email has been imported
    yet" and that results are Yahoo mailbox search results only --
    distinct from evidence already stored in FERChronos.
-10. Bulk import engine (batched/resumable/cancellable/retry-safe) + the
-    pre-import review screen + batch case assignment.
+10. ✅ Bulk import engine (batched/resumable/cancellable/retry-safe) + the
+    pre-import review screen + batch case assignment + progress/status UI.
+
+    Reuses `communication_import_batches`/`communication_import_batch_items`
+    (schema from Step 1, unpopulated until now) as the resumable work
+    queue, and reuses the entire existing `.eml` ingestion pipeline
+    unchanged for the actual import -- no parallel Yahoo-specific
+    evidence path was built. `CommunicationImportBatchItem` gained
+    `mailbox_folder` (additive migration `9f6d90a557ce`; the column was
+    simply missing before this step) alongside `mailbox_uid`, with the
+    unique constraint widened to `(batch_id, mailbox_folder,
+    mailbox_uid)` -- Step 9 already established a UID is only unique
+    within its own folder, so a batch item's durable identity always
+    needs both. `import_eml_file()` gained three more additive,
+    defaulted parameters (`account_id`, `mailbox_folder`, `mailbox_uid`)
+    on top of Step 8's `import_method`/`custody_details` -- every
+    pre-Step-10 caller is unaffected.
+
+    `app/core/communications/imap_import.py::import_one_imap_message()`
+    is the one place raw bytes cross from "on Yahoo's server" to
+    "handed to `import_eml_file()`": fetches via
+    `ImapClient.fetch_raw_message()` (Step 9's `BODY.PEEK[]`-based
+    architecture boundary, first real caller), writes to a throwaway
+    temp file, imports with `import_method="imap_sync"`. Preserves
+    SHA-256/read-only-vault-copy/attachment-preservation/duplicate-
+    detection/threading/attachment-classification/timeline-suggestion/
+    FTS5-indexing exactly as every other import path does, because it
+    *is* every other import path -- nothing here duplicates that logic.
+
+    `app/core/communications/import_batches.py` is pure database
+    bookkeeping (`create_batch()`/`request_cancel()`/`resume_batch()`/
+    `retry_failed_items()`/`count_remaining()`) with no IMAP dependency
+    of its own -- `create_batch()` persists the *entire* selected work
+    queue as `pending` items in one transaction before any processing
+    begins, which is what makes the batch resumable at all. Requires a
+    case/student up front (`BatchValidationError` otherwise); no
+    per-message override UI was built this step, per the plan's own
+    "don't overbuild an override interface that belongs in the bulk-
+    review step" guidance -- the architecture (a nullable per-item path
+    to a different case) is not foreclosed, just not built yet.
+
+    `app/jobs/import_worker.py` is a second, independent daemon thread
+    (same pattern as the Phase 3 OCR worker -- single bounded worker,
+    fresh `Session` per pass, WAL already covers concurrent access) but
+    deliberately not a modification of it: OCR and Communications are
+    unrelated domains. Two considered departures from the OCR pattern,
+    not oversights:
+    - **No crash-recovery sweep.** `OcrJob` has no persisted per-unit
+      progress, so an interrupted job must be force-failed at startup.
+      A `CommunicationImportBatchItem` is committed individually as it
+      completes, so a batch left `running` by a crash is already just
+      as resumable as any other in-progress batch -- `claim_next_batch()`
+      treats `running` as claimable exactly like `pending`, and the very
+      next poll after restart continues it with zero special handling.
+    - **Cancellation** (no OCR precedent at all -- confirmed absent by
+      grep) is a plain `status` check refreshed from the database
+      between every item, written by `request_cancel()` from an
+      entirely different request thread; whatever is `pending` when
+      observed stays `pending` forever, never rolled back, never marked
+      `failed`.
+
+    Per-item error isolation matches this step's explicit split: fetch
+    failure / malformed RFC822 / attachment parse-or-storage failure /
+    a transient network blip on *one* message all mark just that item
+    `failed` and the batch continues; only `ImapAuthenticationError`/
+    `ImapCredentialUnavailableError` (a real account-level problem --
+    retrying per-item would be pointless, and for a rejected password,
+    actively harmful) stop the batch entirely with every not-yet-
+    attempted item left untouched `pending`, surfaced as `status="failed"`
+    with a Resume control. One commit per item, never one commit for
+    a whole batch -- a crash mid-item loses at most that one item
+    (rolled back, still `pending`), never anything already committed.
+
+    UI: the browse/search results table (Step 9) gained per-row
+    checkboxes, select-all, and a required student selector, wrapped in
+    a form posting to the new `/communications/{account_id}/import-batches`
+    route -- browsing/searching itself still requires no student and
+    still imports nothing; only pressing "Start Import" (creating the
+    batch) does anything, and even that only writes rows -- the actual
+    Yahoo fetches happen afterward, entirely in the background worker.
+    New `/communications/import-batches/{batch_id}` status page (plain,
+    manually-refreshed -- deliberately no auto-refresh JavaScript, both
+    mirroring the OCR jobs page's own precedent and keeping "no
+    background polling" true in spirit as well as letter) with
+    Cancel/Resume/Retry-Failed controls shown only when each is
+    meaningful for the batch's current status, plus a "Recent Import
+    Batches" section on the Communications home page.
 11. Bulk attachment-review screen, built on Step 5's logic.
-12. Progress/status UI (mirroring the OCR jobs page) + verification that
-    Disconnect Yahoo only ever removes credentials, never imported data.
-13. *(Gated on Yahoo approving access)* OAuth2 as an added, preferred
+12. *(Gated on Yahoo approving access)* OAuth2 as an added, preferred
     auth option — only if and when approval actually comes through.
 
 Each step: implement → targeted tests → full regression suite → FTS5
