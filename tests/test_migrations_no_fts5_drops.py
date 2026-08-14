@@ -52,3 +52,19 @@ def test_no_migration_drops_an_fts5_table():
         "certainly an untrimmed autogenerate output that would delete a "
         f"search index: {offenders}"
     )
+
+
+def test_no_migration_drops_communication_text_fts():
+    """Communications Phase Step 6: `communication_text_fts` matches the
+    generic `_DROP_FTS_TABLE` pattern above (its name contains "_fts"), so
+    it's already covered by `test_no_migration_drops_an_fts5_table` -- this
+    test names it explicitly so a future reader doesn't have to rediscover
+    that fact, and so a change narrowing the generic pattern would still
+    be caught here.
+    """
+    offenders: list[str] = []
+    for path in _migration_files():
+        if re.search(r"""op\.drop_table\(\s*['"]communication_text_fts""", path.read_text()):
+            offenders.append(path.name)
+
+    assert offenders == [], f"These migrations drop communication_text_fts: {offenders}"

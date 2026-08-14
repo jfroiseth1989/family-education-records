@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Search Communications — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>Search Communications</h1>
+  <p class="hint">
+    Searches imported emails only -- subject and message text, plus sender/
+    recipient/date/attachment filters. This is a separate index from
+    Document search and never changes what Document search finds.
+  </p>
+
+  <section class="panel">
+    <form method="get" action="/communications/search">
+      <label>
+        Search text
+        <input type="text" name="q" value="{{ query }}" placeholder="e.g. IEP meeting, evaluation">
+      </label>
+      <label>
+        Student
+        <select name="case_id">
+          <option value="">(any)</option>
+          {% for case in cases %}
+            <option value="{{ case.case_id }}" {% if case_id == case.case_id | string %}selected{% endif %}>{{ case.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        From (sender)
+        <input type="text" name="sender" value="{{ sender }}" placeholder="name or email address">
+      </label>
+      <label>
+        To (recipient)
+        <input type="text" name="recipient" value="{{ recipient }}" placeholder="email address">
+      </label>
+      <label>
+        Cc
+        <input type="text" name="cc" value="{{ cc }}" placeholder="email address">
+      </label>
+      <label>
+        Subject contains
+        <input type="text" name="subject" value="{{ subject }}">
+      </label>
+      <label>
+        Date from
+        <input type="date" name="date_from" value="{{ date_from }}">
+      </label>
+      <label>
+        Date to
+        <input type="date" name="date_to" value="{{ date_to }}">
+      </label>
+      <label>
+        Has attachments
+        <select name="has_attachments">
+          <option value="" {% if selected_has_attachments == "" %}selected{% endif %}>(any)</option>
+          <option value="true" {% if selected_has_attachments == "true" %}selected{% endif %}>Yes</option>
+          <option value="false" {% if selected_has_attachments == "false" %}selected{% endif %}>No</option>
+        </select>
+      </label>
+      <label>
+        Part of a thread
+        <select name="threaded">
+          <option value="" {% if selected_threaded == "" %}selected{% endif %}>(any)</option>
+          <option value="true" {% if selected_threaded == "true" %}selected{% endif %}>Yes</option>
+          <option value="false" {% if selected_threaded == "false" %}selected{% endif %}>No</option>
+        </select>
+      </label>
+      <button type="submit">Search</button>
+    </form>
+  </section>
+
+  {% if searched %}
+    <section class="panel panel-section-gap">
+      <h2>Results ({{ results | length }})</h2>
+      {% if results %}
+        <table class="data-table">
+          <thead><tr><th>Subject</th><th>From</th><th>Student</th><th>Sent</th><th></th><th>Excerpt</th></tr></thead>
+          <tbody>
+            {% for result in results %}
+              <tr>
+                <td><a href="/communications/email/{{ result.communication_id }}">{{ result.subject or "(no subject)" }}</a></td>
+                <td>{{ result.from_display_name or result.from_address or "—" }}</td>
+                <td>{{ result.case_display_name or "—" }}</td>
+                <td>{{ result.sent_at or "—" }}</td>
+                <td>
+                  {% if result.has_attachments %}<span class="status-badge" title="Has attachments">📎</span>{% endif %}
+                  {% if result.thread_id %}<a href="/communications/threads/{{ result.thread_id }}" title="View Thread">🧵</a>{% endif %}
+                </td>
+                <td>{{ result.snippet or "" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty-state">No matches found for this search and filters.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}

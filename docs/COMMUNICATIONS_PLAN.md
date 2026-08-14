@@ -187,8 +187,31 @@ same read-only-on-write convention.
    originating emails for a Document, supporting more than one).
    Bulk attachment review is still Step 11 -- this step only established
    correct single-attachment behavior for it to reuse.
-6. `communication_text_fts` (new, independent FTS5 table) + Communications
-   search/filter UI.
+6. ✅ `communication_text_fts` (new, independent FTS5 table) + Communications
+   search/filter UI. Indexes `subject` + parsed plain-text `body_text`
+   only. Kept entirely separate from `document_text_fts` and
+   `annotation_notes_fts` -- a Communications result can never be
+   ambiguous with either. Sync via unconditional insert/delete/update
+   triggers, matching `document_pages_fts_au`'s exact pattern -- an
+   earlier draft tried `WHEN deleted_at IS NULL`-guarded triggers to skip
+   indexing soft-deleted rows and that **corrupted the FTS5 index**
+   (reproduced directly: an UPDATE that didn't even touch subject/body,
+   e.g. only `thread_id` changing during thread rebuild, silently broke
+   `MATCH` for that row with no error raised). Fixed by indexing every
+   row unconditionally and excluding soft-deleted communications at
+   query time instead (`c.deleted_at IS NULL`), the same division of
+   responsibility Document search already uses -- see the migration's
+   docstring for the full account.
+   `app/core/indexing/communications_search.py::search_communications()`
+   uses FTS5 (via the same `_quote_as_phrase()` safe-quoting helper
+   Document search already relies on -- untrusted input is always
+   wrapped as a literal phrase, never raw FTS5 syntax) only for the free-
+   text query; every structured filter (sender, recipient, CC, subject,
+   date range, has-attachments, case, threaded/unthreaded) is a plain
+   SQL condition, including `json_each()` over the JSON-array
+   `to_addresses`/`cc_addresses` columns for recipient/CC. New
+   `/communications/search` route/page; result rows link to the existing
+   communication detail page and, when threaded, the thread view.
 7. Timeline suggestions from communications (approve/edit/reject),
    linked back to source email.
 8. Investigate and, if reliable, add `.msg`/other saved-email formats,

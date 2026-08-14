@@ -1,10 +1,10 @@
-"""Communications routes (Communications Phase Steps 2-5): Yahoo account
-connect/disconnect, manual .eml upload/viewing, email thread views, and
-attachment review/promotion to Documents.
+"""Communications routes (Communications Phase Steps 2-6): Yahoo account
+connect/disconnect, manual .eml upload/viewing, email thread views,
+attachment review/promotion to Documents, and Communications search.
 
-No IMAP connectivity, Communications search, or bulk attachment review
-yet -- see docs/COMMUNICATIONS_PLAN.md. Manual upload here is
-deliberately independent of any connected mailbox: it never reads
+No IMAP connectivity or bulk attachment review yet -- see
+docs/COMMUNICATIONS_PLAN.md. Manual upload here is deliberately
+independent of any connected mailbox: it never reads
 `CommunicationAccount`, never checks connection status, and works
 identically whether zero or several Yahoo accounts are connected.
 Thread reconstruction (`app/core/communications/thread_rebuild.py`) runs
@@ -19,7 +19,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +39,7 @@ from app.core.communications.promotion import (
     leave_attachment_with_email,
     promote_attachment_to_document,
 )
+from app.core.indexing.communications_search import search_communications
 from app.core.vault import VaultLayout
 from app.db.models import (
     Case,
@@ -454,3 +455,80 @@ def post_leave_attachment_with_email(
     leave_attachment_with_email(db, attachment, actor)
     db.commit()
     return RedirectResponse(url=f"/communications/attachments/{attachment_id}/review", status_code=303)
+
+
+# --- Communications search (Communications Phase Step 6) -------------------
+
+
+@router.get("/search", response_class=HTMLResponse)
+def search_communications_route(
+    request: Request,
+    q: str = Query(""),
+    case_id: str = Query(""),
+    sender: str = Query(""),
+    recipient: str = Query(""),
+    cc: str = Query(""),
+    subject: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    has_attachments: str = Query(""),
+    threaded: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Render the Communications search form and, if any query/filter is
+    given, its results. Independent of Document search
+    (app/api/search.py) -- shares no query, no index, no route.
+    """
+    parsed_case_id = int(case_id) if case_id.strip() else None
+    parsed_date_from = _parse_optional_date(date_from.strip(), "date_from")
+    parsed_date_to = _parse_optional_date(date_to.strip(), "date_to")
+    parsed_has_attachments = has_attachments if has_attachments in ("true", "false") else ""
+    parsed_threaded = threaded if threaded in ("true", "false") else ""
+
+    results = search_communications(
+        db,
+        query=q,
+        case_id=parsed_case_id,
+        sender=sender,
+        recipient=recipient,
+        cc=cc,
+        subject=subject,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        has_attachments={"true": True, "false": False}.get(parsed_has_attachments),
+        threaded={"true": True, "false": False}.get(parsed_threaded),
+    )
+
+    searched = bool(
+        q.strip()
+        or case_id.strip()
+        or sender.strip()
+        or recipient.strip()
+        or cc.strip()
+        or subject.strip()
+        or date_from.strip()
+        or date_to.strip()
+        or parsed_has_attachments
+        or parsed_threaded
+    )
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communications_search.html",
+        {
+            "query": q,
+            "case_id": case_id,
+            "sender": sender,
+            "recipient": recipient,
+            "cc": cc,
+            "subject": subject,
+            "date_from": date_from,
+            "date_to": date_to,
+            "selected_has_attachments": parsed_has_attachments,
+            "selected_threaded": parsed_threaded,
+            "cases": _list_cases(db),
+            "results": results,
+            "searched": searched,
+        },
+    )

@@ -752,3 +752,128 @@ def test_add_to_documents_redirects_when_unauthenticated(anonymous_client: TestC
     )
     assert response.status_code == 303
     assert response.headers["location"] == "/auth/login"
+
+
+# --- Communications search (Communications Phase Step 6) -------------------
+
+
+def test_search_page_shows_empty_form_with_no_query(client: TestClient):
+    response = client.get("/communications/search")
+    assert response.status_code == 200
+    assert "Search Communications" in response.text
+    assert "Results" not in response.text  # no results section until something is searched
+
+
+def test_search_by_free_text_finds_uploaded_email(client: TestClient):
+    case_id = _create_case(client)
+    _upload_eml(client, case_id, subject="Annual IEP Review Meeting", message_id="<search-1@example.org>")
+
+    response = client.get("/communications/search", params={"q": "Annual IEP Review"})
+    assert response.status_code == 200
+    assert "Annual IEP Review Meeting" in response.text
+    assert "Results (1)" in response.text
+
+
+def test_search_no_match_shows_empty_state(client: TestClient):
+    case_id = _create_case(client)
+    _upload_eml(client, case_id, subject="Unrelated Subject", message_id="<search-2@example.org>")
+
+    response = client.get("/communications/search", params={"q": "nonexistent aardvark topic"})
+    assert response.status_code == 200
+    assert "No matches found" in response.text
+
+
+def test_search_by_sender_filter(client: TestClient):
+    case_id = _create_case(client)
+    _upload_eml(client, case_id, subject="From Teacher", message_id="<search-3@example.org>")
+
+    response = client.get("/communications/search", params={"sender": "amanda.wagner"})
+    assert response.status_code == 200
+    assert "From Teacher" in response.text
+
+
+def test_search_result_links_to_communication_detail(client: TestClient):
+    case_id = _create_case(client)
+    communication_id = _upload_email_with_attachment(client, case_id, message_id="<search-4@x>")
+
+    response = client.get("/communications/search", params={"q": "2024 IEP"})
+    assert f"/communications/email/{communication_id}" in response.text
+
+
+def test_search_result_shows_thread_link_when_threaded(client: TestClient):
+    case_id = _create_case(client)
+    client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={
+            "file": (
+                "parent.eml",
+                (
+                    b"From: teacher@district.example.org\n"
+                    b"To: parent@yahoo.com\n"
+                    b"Subject: Threaded Search Topic\n"
+                    b"Date: Mon, 7 Mar 2022 09:00:00 -0500\n"
+                    b"Message-ID: <search-thr-p@x>\n\n"
+                    b"Starting.\n"
+                ),
+                "message/rfc822",
+            )
+        },
+        follow_redirects=False,
+    )
+    client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={
+            "file": (
+                "reply.eml",
+                (
+                    b"From: parent@yahoo.com\n"
+                    b"To: teacher@district.example.org\n"
+                    b"Subject: Re: Threaded Search Topic\n"
+                    b"Date: Tue, 8 Mar 2022 09:00:00 -0500\n"
+                    b"Message-ID: <search-thr-r@x>\n"
+                    b"In-Reply-To: <search-thr-p@x>\n\n"
+                    b"Replying.\n"
+                ),
+                "message/rfc822",
+            )
+        },
+        follow_redirects=False,
+    )
+
+    response = client.get("/communications/search", params={"q": "Threaded Search Topic"})
+    assert "/communications/threads/" in response.text
+
+
+def test_search_malformed_query_does_not_500(client: TestClient):
+    case_id = _create_case(client)
+    _upload_eml(client, case_id, subject="Safe Content", message_id="<search-5@example.org>")
+
+    for dangerous in ['"unterminated', "NEAR(a b)", "'; DROP TABLE communications; --", "***"]:
+        response = client.get("/communications/search", params={"q": dangerous})
+        assert response.status_code == 200, (dangerous, response.text[:300])
+
+
+def test_search_page_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.get("/communications/search", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"
+
+
+def test_communications_search_does_not_change_document_search_route(client: TestClient):
+    """Communications Phase Step 6: a brand-new, independent route --
+    /cases/{id}/search (Document search) must be completely unaffected.
+    """
+    case_id = _create_case(client)
+    upload_response = client.post(
+        f"/cases/{case_id}/documents",
+        data={},
+        files={"file": ("doc.txt", b"A Prior Written Notice about placement.", "text/plain")},
+        follow_redirects=False,
+    )
+    assert upload_response.status_code == 303
+
+    response = client.get(f"/cases/{case_id}/search", params={"q": "Prior Written Notice"})
+    assert response.status_code == 200
+    assert "Results (1)" in response.text
