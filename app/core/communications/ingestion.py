@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.communications.custody import write_communication_custody_event
+from app.core.communications.thread_rebuild import rebuild_threads
 from app.core.extraction.email import parse_message
 from app.core.extraction.types import ExtractedAttachment
 from app.core.files import compute_sha256, copy_into_vault, make_read_only
@@ -138,6 +139,8 @@ def import_eml_file(
 
     for attachment in parsed.attachments:
         _store_attachment(db, vault, case, communication, attachment)
+
+    rebuild_threads(db)
 
     return communication
 

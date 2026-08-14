@@ -1,11 +1,14 @@
-"""Communications routes (Communications Phase Steps 2-3): Yahoo account
-connect/disconnect, and manual .eml upload/viewing.
+"""Communications routes (Communications Phase Steps 2-4): Yahoo account
+connect/disconnect, manual .eml upload/viewing, and email thread views.
 
-No IMAP connectivity, thread reconstruction, attachment-to-Document
-promotion, or search yet -- see docs/COMMUNICATIONS_PLAN.md. Manual
-upload here is deliberately independent of any connected mailbox: it
-never reads `CommunicationAccount`, never checks connection status, and
-works identically whether zero or several Yahoo accounts are connected.
+No IMAP connectivity, attachment-to-Document promotion, or search yet --
+see docs/COMMUNICATIONS_PLAN.md. Manual upload here is deliberately
+independent of any connected mailbox: it never reads
+`CommunicationAccount`, never checks connection status, and works
+identically whether zero or several Yahoo accounts are connected.
+Thread reconstruction (`app/core/communications/thread_rebuild.py`) runs
+automatically inside `import_eml_file()`; these routes only ever read the
+resulting `communication_threads` rows, never write to them.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from app.core.communications.accounts import connect_yahoo_account, disconnect_a
 from app.core.communications.credentials import KeyringUnavailableError
 from app.core.communications.ingestion import DuplicateCommunicationError, import_eml_file
 from app.core.vault import VaultLayout
-from app.db.models import Case, Communication, CommunicationAccount
+from app.db.models import Case, Communication, CommunicationAccount, CommunicationThread
 
 router = APIRouter(prefix="/communications", tags=["communications"])
 
@@ -208,4 +211,45 @@ def get_communication_detail(
         request,
         "communication_detail.html",
         {"communication": communication, "attachments": communication.attachments},
+    )
+
+
+def _list_threads(db: Session, limit: int = 100) -> list[CommunicationThread]:
+    return list(
+        db.scalars(
+            select(CommunicationThread)
+            .order_by(CommunicationThread.last_message_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def _sorted_thread_messages(thread: CommunicationThread) -> list[Communication]:
+    return sorted(
+        thread.communications,
+        key=lambda c: (c.sent_at or c.received_at or c.imported_at, c.communication_id),
+    )
+
+
+@router.get("/threads", response_class=HTMLResponse)
+def get_communication_threads(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request, "communication_threads.html", {"threads": _list_threads(db)}
+    )
+
+
+@router.get("/threads/{thread_id}", response_class=HTMLResponse)
+def get_communication_thread_detail(
+    thread_id: int, request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    thread = db.get(CommunicationThread, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found.")
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "communication_thread_detail.html",
+        {"thread": thread, "messages": _sorted_thread_messages(thread)},
     )

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ thread.subject_normalized or "(no subject)" }} — Thread — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications/threads">&larr; Email Threads</a></p>
+  <h1>{{ thread.subject_normalized or "(no subject)" }}</h1>
+
+  <section class="panel">
+    <table class="kv-table">
+      <tr><th>Participants</th><td>{{ thread.participant_summary or "—" }}</td></tr>
+      <tr><th>Messages</th><td>{{ thread.message_count }}</td></tr>
+      <tr><th>Date range</th><td>
+        {% if thread.first_message_at and thread.last_message_at %}
+          {{ thread.first_message_at }} &ndash; {{ thread.last_message_at }}
+        {% else %}
+          —
+        {% endif %}
+      </td></tr>
+      <tr><th>Student</th><td>{{ thread.case.display_name if thread.case else "—" }}</td></tr>
+    </table>
+  </section>
+
+  <section class="panel panel-section-gap">
+    <h2>Messages, chronologically</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th>Sent</th><th>From</th><th>Subject</th></tr>
+      </thead>
+      <tbody>
+        {% for message in messages %}
+          <tr>
+            <td>{{ message.sent_at or "Unknown" }}</td>
+            <td>{{ message.from_display_name or message.from_address or "—" }}</td>
+            <td><a href="/communications/email/{{ message.communication_id }}">{{ message.subject or "(no subject)" }}</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

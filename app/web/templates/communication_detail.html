@@ -3,6 +3,9 @@
 {% block content %}
   <p><a href="/communications">&larr; Communications</a></p>
   <h1>{{ communication.subject or "(no subject)" }}</h1>
+  {% if communication.thread_id %}
+    <p><a href="/communications/threads/{{ communication.thread_id }}">View Thread</a></p>
+  {% endif %}
 
   <section class="panel">
     <h2>Message details</h2>

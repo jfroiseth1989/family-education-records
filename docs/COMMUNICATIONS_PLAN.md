@@ -121,7 +121,33 @@ same read-only-on-write convention.
    page and an "All Communications" list -- verified working with zero
    Yahoo accounts connected, proving the independence requirement.
    Thread reconstruction is still Step 4; nothing here groups messages.
-4. Thread reconstruction + thread view.
+4. ✅ Thread reconstruction + thread view. Pure grouping algorithm in
+   `app/core/communications/thread_grouping.py::group_messages()`, in the
+   approved precedence order (Message-ID as a lookup target, then
+   In-Reply-To, then References -- all three build one linkage graph
+   via connected components, since References is RFC 5322-defined to be
+   a superset of what In-Reply-To names; only a message with *none* of
+   the three falls back to conservative subject+participants+date-
+   proximity matching, and only against other equally headerless
+   messages). A component of size 1 stays unthreaded -- no
+   `communication_threads` row, no broken thread link in the UI.
+   `app/core/communications/thread_rebuild.py::rebuild_threads()` is the
+   DB-facing reconciliation layer: a full, deterministic rebuild over
+   every non-deleted communication on each call, called automatically at
+   the end of `import_eml_file()`. Idempotent (reuses existing
+   `thread_id`s, no row churn on a no-op rerun); handles out-of-order
+   imports and a reply imported before its parent (both fall out of
+   recomputing from full current state rather than incremental
+   patching); when a later message links two previously separate
+   threads, the lower `thread_id` is kept canonical and the other
+   thread row is deleted once its members are reassigned -- the
+   underlying `Communication` rows and their custody events are never
+   touched by any of this, only the `thread_id` column and the derived
+   `communication_threads` row. New `/communications/threads` (list) and
+   `/communications/threads/{id}` (chronological detail) routes;
+   `communication_detail.html` gained a "View Thread" link shown only
+   when `thread_id` is set. No new migration (the `communication_threads`
+   table already existed from Step 1).
 5. Attachment educational-record detection (extended trigger coverage
    per §1 decision 2) + single-item attachment review + "Add to
    Documents" via the existing auto-fill preview + document↔email

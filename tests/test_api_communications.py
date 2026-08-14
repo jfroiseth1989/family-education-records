@@ -433,3 +433,106 @@ def test_communication_detail_redirects_when_unauthenticated(anonymous_client: T
     response = anonymous_client.get("/communications/email/1", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/auth/login"
+
+
+# --- email threads (Communications Phase Step 4) -----------------------
+
+
+def _upload_eml(client: TestClient, case_id: int, **kwargs) -> str:
+    response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={"file": (kwargs.pop("filename", "notice.eml"), _eml_bytes(**kwargs), "message/rfc822")},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return response.headers["location"]
+
+
+def test_threads_page_shows_empty_state_with_no_threads(client: TestClient):
+    response = client.get("/communications/threads")
+    assert response.status_code == 200
+    assert "No email threads yet" in response.text
+
+
+def test_lone_message_has_no_thread_link_on_detail_page(client: TestClient):
+    case_id = _create_case(client)
+    detail_url = _upload_eml(client, case_id, subject="Solo Message", message_id="<solo@example.org>")
+
+    response = client.get(detail_url)
+    assert response.status_code == 200
+    assert "/communications/threads/" not in response.text
+
+
+def test_reply_chain_appears_in_thread_list_and_detail(client: TestClient, app: FastAPI):
+    from app.db.models import Communication
+
+    case_id = _create_case(client)
+    parent_url = _upload_eml(
+        client, case_id, subject="IEP Meeting", message_id="<parent@example.org>", filename="parent.eml"
+    )
+    parent_id = int(parent_url.rsplit("/", 1)[-1])
+
+    with app.state.session_factory() as db:
+        parent = db.get(Communication, parent_id)
+        assert parent.thread_id is None  # not yet a thread -- only one message so far
+
+    reply_response = client.post(
+        "/communications/upload",
+        data={"case_id": str(case_id)},
+        files={
+            "file": (
+                "reply.eml",
+                (
+                    b"From: parent@yahoo.com\n"
+                    b"To: teacher@district.example.org\n"
+                    b"Subject: Re: IEP Meeting\n"
+                    b"Date: Tue, 8 Mar 2022 09:00:00 -0500\n"
+                    b"Message-ID: <reply@example.org>\n"
+                    b"In-Reply-To: <parent@example.org>\n"
+                    b"\n"
+                    b"Sounds good.\n"
+                ),
+                "message/rfc822",
+            )
+        },
+        follow_redirects=False,
+    )
+    assert reply_response.status_code == 303
+
+    # The thread now shows on the list page.
+    threads_page = client.get("/communications/threads")
+    assert "IEP Meeting" in threads_page.text
+    assert "2" in threads_page.text  # message_count column
+
+    # The parent's detail page now has a working View Thread link.
+    parent_detail = client.get(parent_url)
+    assert "View Thread" in parent_detail.text
+
+    with app.state.session_factory() as db:
+        parent = db.get(Communication, parent_id)
+        thread_id = parent.thread_id
+    assert thread_id is not None
+
+    thread_detail = client.get(f"/communications/threads/{thread_id}")
+    assert thread_detail.status_code == 200
+    assert "IEP Meeting" in thread_detail.text
+    # Both original messages remain independently viewable.
+    assert f'href="/communications/email/{parent_id}"' in thread_detail.text
+
+
+def test_thread_detail_unknown_id_returns_404(client: TestClient):
+    response = client.get("/communications/threads/999999")
+    assert response.status_code == 404
+
+
+def test_threads_page_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.get("/communications/threads", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"
+
+
+def test_thread_detail_redirects_when_unauthenticated(anonymous_client: TestClient):
+    response = anonymous_client.get("/communications/threads/1", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"

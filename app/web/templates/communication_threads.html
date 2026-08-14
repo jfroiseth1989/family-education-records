@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Email Threads — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/communications">&larr; Communications</a></p>
+  <h1>Email Threads</h1>
+  <p class="hint">
+    Threads are reconstructed automatically from Message-ID/In-Reply-To/References
+    headers (and, only when those are unavailable, matching subject +
+    participants + date). Threading only groups messages for viewing --
+    every original email is preserved and independently viewable.
+  </p>
+
+  <section class="panel">
+    {% if threads %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Subject</th><th>Participants</th><th>Messages</th><th>Date range</th></tr>
+        </thead>
+        <tbody>
+          {% for thread in threads %}
+            <tr>
+              <td><a href="/communications/threads/{{ thread.thread_id }}">{{ thread.subject_normalized or "(no subject)" }}</a></td>
+              <td>{{ thread.participant_summary or "—" }}</td>
+              <td>{{ thread.message_count }}</td>
+              <td>
+                {% if thread.first_message_at and thread.last_message_at %}
+                  {{ thread.first_message_at }} &ndash; {{ thread.last_message_at }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No email threads yet. Threads appear automatically once two or more related messages are imported.</p>
+    {% endif %}
+  </section>
+{% endblock %}
