@@ -174,6 +174,111 @@ def test_disconnect_account_preserves_communications_and_documents(
     assert still_there.deleted_at is None
 
 
+def test_reconnecting_same_address_reactivates_existing_account(
+    db_session: Session, working_keyring
+):
+    """Step 12: reconnecting a previously-disconnected Yahoo address must
+    reuse the same `account_id`, not fork a second logical account --
+    this is what keeps Step 10's account-scoped duplicate-import
+    detection, and every existing batch/attachment/provenance row's
+    `account_id` foreign key, pointed at the account's real history.
+    """
+    account = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="first-app-pw", actor="test-user"
+    )
+    original_account_id = account.account_id
+    disconnect_account(db_session, account)
+
+    reconnected = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="second-app-pw", actor="test-user"
+    )
+
+    assert reconnected.account_id == original_account_id
+    assert db_session.query(CommunicationAccount).count() == 1
+    stored = db_session.get(CommunicationAccount, original_account_id)
+    assert stored.status == "connected"
+    assert stored.disconnected_at is None
+    assert credentials.get_credential(stored.credential_ref) == "second-app-pw"
+
+
+def test_reconnecting_same_address_case_insensitive(db_session: Session, working_keyring):
+    account = connect_yahoo_account(
+        db_session, email_address="Parent@Yahoo.com", app_password="first-app-pw", actor="test-user"
+    )
+    disconnect_account(db_session, account)
+
+    reconnected = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="second-app-pw", actor="test-user"
+    )
+
+    assert reconnected.account_id == account.account_id
+    assert db_session.query(CommunicationAccount).count() == 1
+
+
+def test_reconnecting_preserves_prior_imports_account_scope(db_session: Session, working_keyring, sample_case):
+    """The account-scoped duplicate-detection guarantee Step 10 depends
+    on: a Communication imported before a disconnect/reconnect cycle
+    keeps the exact same `account_id` the reconnected account now has,
+    so a later re-import of the same message is still detected as a
+    duplicate against it.
+    """
+    from app.db.models import Communication
+
+    account = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="first-app-pw", actor="test-user"
+    )
+    communication = Communication(
+        account_id=account.account_id,
+        case_id=sample_case.case_id,
+        subject="IEP meeting",
+        sha256_hash="a" * 64,
+        stored_path="cases/1/communications/aa/message.eml",
+        file_size_bytes=100,
+        import_method="imap_sync",
+        imported_by="test-user",
+    )
+    db_session.add(communication)
+    db_session.commit()
+
+    disconnect_account(db_session, account)
+    reconnected = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="second-app-pw", actor="test-user"
+    )
+
+    db_session.refresh(communication)
+    assert communication.account_id == reconnected.account_id
+
+
+def test_connecting_a_different_address_creates_a_separate_account(db_session: Session, working_keyring):
+    first = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="pw-1", actor="test-user"
+    )
+    second = connect_yahoo_account(
+        db_session, email_address="other-parent@yahoo.com", app_password="pw-2", actor="test-user"
+    )
+
+    assert first.account_id != second.account_id
+    assert db_session.query(CommunicationAccount).count() == 2
+
+
+def test_reconnecting_an_already_connected_account_is_safe(db_session: Session, working_keyring):
+    """Submitting Connect Yahoo again for an already-connected account
+    (e.g. to rotate the app password) reactivates in place rather than
+    erroring or forking a duplicate row.
+    """
+    account = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="first-app-pw", actor="test-user"
+    )
+
+    reconnected = connect_yahoo_account(
+        db_session, email_address="parent@yahoo.com", app_password="rotated-app-pw", actor="test-user"
+    )
+
+    assert reconnected.account_id == account.account_id
+    assert db_session.query(CommunicationAccount).count() == 1
+    assert credentials.get_credential(reconnected.credential_ref) == "rotated-app-pw"
+
+
 def test_disconnect_is_safe_to_call_twice(db_session: Session, working_keyring):
     account = connect_yahoo_account(
         db_session, email_address="parent@yahoo.com", app_password="app-pw-123", actor="test-user"

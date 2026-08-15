@@ -124,14 +124,26 @@ def request_cancel(db: Session, batch: CommunicationImportBatch) -> None:
         db.commit()
 
 
+def _account_is_connected(db: Session, batch: CommunicationImportBatch) -> bool:
+    account = db.get(CommunicationAccount, batch.account_id)
+    return account is not None and account.status == "connected"
+
+
 def resume_batch(db: Session, batch: CommunicationImportBatch) -> None:
     """Re-arm a `failed` batch (an account-level problem, e.g. a
     rejected app password, presumably now fixed) so the worker picks it
     back up. Never touches any `CommunicationImportBatchItem` row --
     whatever is `imported`/`skipped_duplicate`/`failed` stays exactly as
     it is; only items still `pending` will be attempted.
+
+    A no-op (Step 12) if the batch's account is not currently
+    `connected` -- there is no valid credential to process Yahoo-
+    dependent work with, so re-arming the batch would only cost one
+    pointless running-then-failed cycle once the worker next claims it.
+    The batch stays exactly `failed`, with all its state intact, until
+    the account is reconnected and Resume is pressed again.
     """
-    if batch.status in _RESUMABLE_STATUSES:
+    if batch.status in _RESUMABLE_STATUSES and _account_is_connected(db, batch):
         batch.status = "pending"
         db.commit()
 
@@ -142,7 +154,16 @@ def retry_failed_items(db: Session, batch: CommunicationImportBatch) -> int:
     `imported`/`skipped_duplicate` items at all. Returns the number of
     items reset. Safe to call on a batch with zero failed items (a
     no-op, not an error).
+
+    Also a no-op (Step 12), returning 0 and changing nothing, if the
+    batch's account is not currently `connected` -- resetting these
+    items to `pending` would otherwise just have the worker re-fail them
+    immediately with no valid credential to retry them with. Reconnect
+    the account first, then retry.
     """
+    if not _account_is_connected(db, batch):
+        return 0
+
     failed_items = list(
         db.scalars(
             select(CommunicationImportBatchItem).where(

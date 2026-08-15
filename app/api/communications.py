@@ -39,7 +39,7 @@ from app.core.communications.attachment_metadata import (
     suggest_date_received,
     suggest_source,
 )
-from app.core.communications.credentials import KeyringUnavailableError
+from app.core.communications.credentials import KeyringUnavailableError, get_credential
 from app.core.communications.imap_client import (
     DEFAULT_SEARCH_LIMIT,
     ImapAuthenticationError,
@@ -105,6 +105,32 @@ def _list_accounts(db: Session) -> list[CommunicationAccount]:
     )
 
 
+def _account_rows(db: Session) -> list[dict]:
+    """Each account paired with whether its credential is actually
+    present in the OS keyring right now (Step 12) -- a local,
+    network-free lookup (`get_credential()` never contacts Yahoo), so
+    this is safe to compute on every page load. A `connected` account
+    whose keyring entry was deleted or revoked outside FERChronos (the
+    OS store was cleared, a sync tool wiped it, etc.) shows as
+    "Credential unavailable" here rather than a misleading "connected" --
+    the database's own `status` column has no way to know this on its
+    own, since deleting a keyring entry is invisible to it until
+    something actually tries to use the credential.
+    """
+    rows = []
+    for account in _list_accounts(db):
+        credential_available = (
+            account.status == "connected" and get_credential(account.credential_ref) is not None
+        )
+        rows.append(
+            {
+                "account": account,
+                "credential_available": credential_available,
+            }
+        )
+    return rows
+
+
 def _list_recent_communications(db: Session, limit: int = 100) -> list[Communication]:
     return list(
         db.scalars(
@@ -155,7 +181,7 @@ def _home_context(
     mailbox_test_ok: bool | None = None,
 ) -> dict:
     return {
-        "accounts": _list_accounts(db),
+        "account_rows": _account_rows(db),
         "connect_error": connect_error,
         "communications": _list_recent_communications(db),
         "cases": _list_cases(db),

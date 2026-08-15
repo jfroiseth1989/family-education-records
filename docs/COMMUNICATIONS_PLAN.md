@@ -608,7 +608,133 @@ same read-only-on-write convention.
     "Review Attachments" link (shown once a batch has imported anything)
     scoped to that batch via `?batch_id=`; the Communications home page
     gained a general, unscoped link to the same page.
-12. *(Gated on Yahoo approving access)* OAuth2 as an added, preferred
+12. ✅ Final integration hardening: disconnect/reconnect correctness,
+    credential-failure handling, cross-feature provenance audit, network
+    boundary audit, and documentation.
+
+    Not a new feature family -- every piece of this step closes an
+    integration gap between Steps 9-11's already-implemented pieces, or
+    adds tests proving a gap already didn't exist.
+
+    **Account reactivation on reconnect** is the one real behavior
+    change. `connect_yahoo_account()` (`app/core/communications/accounts.py`)
+    now looks for an existing `CommunicationAccount` row matching the
+    same `provider`/`email_address` (case-insensitively) before creating
+    a new one; if found, it reactivates that row in place (new
+    credential stored under the same `credential_ref`, `status` back to
+    `"connected"`, `connected_at` refreshed, `disconnected_at` cleared)
+    instead of forking a second logical account. This matters for more
+    than tidiness: `Communication.account_id` is exactly what Step 10's
+    duplicate-import detection scopes on
+    (`ingestion.py::_find_duplicate_communication`, and the DB-level
+    `uq_communication_account_message_id` partial unique index), and
+    every existing batch/attachment/provenance row's `account_id`
+    foreign key already points at the original account. Forking a new
+    row on reconnect would have silently narrowed that dedup scope to
+    "since the most recent reconnect" -- re-selecting an
+    already-imported message after a disconnect/reconnect cycle would
+    have created a second `Communication` row for it rather than being
+    recognized as a duplicate, without deleting or corrupting anything
+    already there. Reactivation is covered directly
+    (`tests/test_communications_accounts.py`) and at the full
+    batch-import-worker level
+    (`test_reconnect_preserves_account_scoped_duplicate_detection` in
+    `tests/test_communications_step12_integration.py`), which reconnects
+    a disconnected account and proves re-importing the same message
+    still resolves to the one existing `Communication` row, not a
+    second one.
+
+    **Unfinished-batch safety after disconnect.** `resume_batch()`/
+    `retry_failed_items()` (`app/core/communications/import_batches.py`)
+    are now no-ops whenever the batch's account isn't currently
+    `connected` -- previously, clicking Resume on a batch whose account
+    had been disconnected would still flip it to `pending`, only for the
+    worker to immediately fail it again once it discovered the missing
+    credential (safe, since `open_connection()` already refuses to open
+    a socket with no stored credential, but a pointless, confusing
+    round-trip). The batch status page
+    (`communication_import_batch.html`) now checks `batch.account.status`
+    directly and only offers Resume/Retry-Failed when the account is
+    actually connected, showing a plain explanation and a link back to
+    reconnect otherwise -- satisfying "show a clear message" without
+    needing a new persisted batch state.
+
+    **Missing/revoked keyring credential.** This was already handled
+    correctly by Step 9's design (`imap_service.py::open_connection()`
+    checks `get_credential()` for `None` *before* ever constructing a
+    socket, and every route already converts
+    `ImapCredentialUnavailableError` into a fixed, safe message) --
+    Step 12 adds direct test coverage for the specific scenario the spec
+    calls out (the database still says `"connected"` but the OS keyring
+    entry was deleted outside FERChronos, not via Disconnect) and
+    surfaces it proactively rather than only reactively: `_account_rows()`
+    (`app/api/communications.py`) does a local, network-free
+    `get_credential()` check on every Communications home-page load and
+    renders "Credential unavailable" instead of a misleading "Connected"
+    badge, with a hint that already-imported evidence is unaffected
+    either way.
+
+    **Yahoo-side revocation mid-batch.** Already correctly isolated by
+    Step 10's worker design (`ImapAuthenticationError` mid-loop stops the
+    batch and leaves that item `pending`, but never touches an already-
+    committed item from earlier in the same batch) -- Step 12 adds
+    `test_auth_revocation_mid_batch_preserves_earlier_successful_imports`
+    to prove it directly: a batch with two items where the second raises
+    an auth failure ends with the first message fully imported,
+    unmodified, and not soft-deleted, while the second stays `pending`
+    and the batch is `failed`, not partially rolled back.
+
+    **Account status UI** (`communications_home.html`) now distinguishes
+    "Connected," "Credential unavailable," and "Disconnected" instead of
+    a binary connected/disconnected badge, and every disconnected or
+    credential-unavailable row explicitly states that its previously
+    imported evidence remains local and fully usable. Language
+    throughout was reviewed to avoid implying a continuous live
+    connection (there still isn't one -- see §16/Privacy doc).
+
+    **Cross-feature provenance audit and orphan/reference integrity**
+    (`tests/test_communications_step12_integration.py`) trace one
+    realistically imported email-with-attachment through every
+    relationship named in the spec, in both directions, always via a
+    real FK/link: Email↔Thread, Email↔Attachment, Email/Attachment↔
+    Document (via `CommunicationDocumentLink`, not filename matching),
+    Email↔Timeline Suggestion (`AiObservation.communication_id`), Import
+    Batch↔Communication (`CommunicationImportBatchItem.communication_id`),
+    and Communications Search↔Email -- both at the database layer and by
+    asserting the actual rendered HTML contains the real link/URL, not
+    reconstructed text. Separate tests confirm disconnect orphans
+    nothing and reconnect mutates no existing provenance row.
+
+    **Network boundary audit.** A dynamic test
+    (`test_local_evidence_routes_never_open_an_imap_connection`) patches
+    `ImapClient.connect_and_authenticate()` to raise if it's ever called,
+    then exercises every local, already-imported-evidence route (home,
+    email detail, thread, threads list, search, attachment review,
+    single-attachment review, batch status, Document detail, facts
+    review, timeline) and confirms none of them trip it -- proving by
+    construction, not by inspection, that only Test Connection/Browse/
+    Import ever reach the IMAP layer.
+
+    **Docs.** `docs/PRIVACY_SECURITY.md` gained §2.2 (the disconnect/
+    reconnect/credential-failure lifecycle above) and §2.3 (why `.eml`/
+    `.mbox` are supported, `.msg` isn't, and a PDF/screenshot of an email
+    stays a `Document`) so the privacy/security posture of the whole
+    Communications feature is described in one place, current as of this
+    step, rather than scattered only across per-step plan entries.
+
+    **Step 11 verification-record correction.** The Step 11 write-up
+    above reported its full-suite result from memory rather than from
+    the actual last full-suite run; the number quoted there ("1087
+    passed, 1 skipped") was actually the *backward-compatibility stash
+    baseline* -- the suite run with Step 11's code stashed away, 37
+    tests short of the real total. The genuine Step 11 full-suite result
+    (with Step 11's code present) was 1124 passed, 1 skipped, confirmed
+    against this session's own captured command output and against a
+    fresh `pytest --collect-only` count (1125 collected = 1124 + 1
+    skipped) at the start of Step 12. No committed documentation had
+    repeated the wrong number; this correction lives here for the
+    record.
+13. *(Gated on Yahoo approving access)* OAuth2 as an added, preferred
     auth option — only if and when approval actually comes through.
 
 Each step: implement → targeted tests → full regression suite → FTS5

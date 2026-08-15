@@ -7,26 +7,34 @@
     manual .eml upload (a later step) -- manual upload never requires a
     connected mailbox. FERChronos only ever reads mail from a connected
     account; it never modifies, moves, or deletes anything in your
-    mailbox.
+    mailbox. There is no ongoing or background sync of any kind --
+    FERChronos only ever contacts Yahoo when you explicitly test a
+    connection, browse/search a mailbox, or start/resume/retry an
+    import. Disconnecting an account never deletes anything already
+    imported -- every Communication, attachment, and Document it
+    produced stays exactly as usable as before, offline included.
   </p>
 
   <section class="panel">
     <h2>Connected accounts</h2>
-    {% if accounts %}
+    {% if account_rows %}
       <table class="data-table">
         <thead>
           <tr><th>Provider</th><th>Email</th><th>Status</th><th>Connected</th><th>Disconnected</th><th></th></tr>
         </thead>
         <tbody>
-          {% for account in accounts %}
+          {% for row in account_rows %}
+            {% set account = row.account %}
             <tr>
               <td>{{ account.provider | capitalize }}</td>
               <td>{{ account.email_address }}</td>
               <td>
-                {% if account.status == "connected" %}
-                  <span class="status-badge status-current">connected</span>
+                {% if account.status == "connected" and row.credential_available %}
+                  <span class="status-badge status-current">Connected</span>
+                {% elif account.status == "connected" %}
+                  <span class="status-badge status-superseded">Credential unavailable</span>
                 {% else %}
-                  <span class="status-badge status-superseded">disconnected</span>
+                  <span class="status-badge status-superseded">Disconnected</span>
                 {% endif %}
               </td>
               <td>{{ account.connected_at }}</td>
@@ -45,6 +53,35 @@
                 {% endif %}
               </td>
             </tr>
+            {% if account.status == "connected" and not row.credential_available %}
+              <tr>
+                <td colspan="6">
+                  <p class="hint auth-error">
+                    The saved app password for this account is no longer
+                    available in this computer's secure credential store
+                    (it may have been cleared outside FERChronos). Mailbox
+                    access will fail until you reconnect below with a
+                    valid app password -- previously imported evidence
+                    from this account is untouched and remains fully
+                    usable either way.
+                  </p>
+                </td>
+              </tr>
+            {% endif %}
+            {% if account.status != "connected" %}
+              <tr>
+                <td colspan="6">
+                  <p class="hint">
+                    Imported evidence from this mailbox remains local and
+                    fully usable -- Communications, attachments, and any
+                    Documents already promoted from it are unaffected by
+                    disconnecting. Reconnect with the same Yahoo address
+                    below to resume Yahoo-dependent work; nothing
+                    re-imports automatically.
+                  </p>
+                </td>
+              </tr>
+            {% endif %}
             {% if mailbox_test_account_id == account.account_id %}
               <tr>
                 <td colspan="6">
@@ -98,7 +135,11 @@
       <p class="hint">
         Connecting only saves this credential securely -- it does not
         contact Yahoo, test the login, or import any mail. That happens
-        later, only when you explicitly start an import.
+        later, only when you explicitly start an import. If this Yahoo
+        address was connected here before, connecting again reactivates
+        that same account rather than creating a separate one, so every
+        message already imported through it stays correctly associated
+        -- nothing is re-imported automatically.
       </p>
       <button type="submit">Connect Yahoo</button>
     </form>

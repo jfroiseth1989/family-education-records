@@ -45,13 +45,13 @@
         <button type="submit" class="btn-secondary">Cancel</button>
       </form>
     {% endif %}
-    {% if batch.status == "failed" %}
+    {% if batch.status == "failed" and batch.account.status == "connected" %}
       <form method="post" action="/communications/import-batches/{{ batch.batch_id }}/resume" style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <button type="submit" class="btn-secondary">Resume</button>
       </form>
     {% endif %}
-    {% if batch.failed_count > 0 %}
+    {% if batch.failed_count > 0 and batch.account.status == "connected" %}
       <form method="post" action="/communications/import-batches/{{ batch.batch_id }}/retry-failed" style="display:inline">
         <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
         <button type="submit" class="btn-secondary">Retry Failed</button>
@@ -65,12 +65,22 @@
         Yahoo and stay unselected.
       </p>
     {% endif %}
-    {% if batch.status == "failed" %}
+    {% if batch.status == "failed" and batch.account.status == "connected" %}
       <p class="hint auth-error">
         Stopped because of a problem with the mailbox connection itself
         (not any one message) -- check the account is still connected
         with a valid app password, then press Resume to continue from
         where this left off.
+      </p>
+    {% endif %}
+    {% if batch.account.status != "connected" and (batch.status == "failed" or batch.failed_count > 0 or remaining > 0) %}
+      <p class="hint auth-error">
+        The Yahoo account for this batch ({{ batch.account.email_address }})
+        is currently disconnected -- messages already imported above are
+        untouched and remain fully usable, but this batch cannot fetch
+        anything further from Yahoo until that account is reconnected.
+        <a href="/communications">Reconnect the account</a>, then return
+        here to resume or retry.
       </p>
     {% endif %}
   </section>

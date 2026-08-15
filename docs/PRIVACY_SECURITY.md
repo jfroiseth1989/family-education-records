@@ -104,6 +104,78 @@ is bounded as follows:
   written by these routes. The UI makes this explicit ("No email has
   been imported yet") so a search result is never mistaken for evidence
   already stored in FERChronos.
+- **Connecting a Yahoo account is entirely optional.** Every Communications
+  workflow that doesn't require live mailbox access — manual `.eml`
+  upload, `.mbox` archive import, browsing/searching/reviewing anything
+  already imported, Communications search, threads, attachment review,
+  Document promotion, timeline suggestions — works identically whether
+  zero or several Yahoo accounts are connected, and requires zero
+  outbound network access either way (Communications Phase Step 12).
+  Manual `.eml`/`.mbox` import in particular never reads
+  `CommunicationAccount` at all.
+
+### 2.2 Yahoo account lifecycle: disconnect, reconnect, and credential
+failure (Communications Phase Step 12)
+
+- **Disconnecting a mailbox never deletes evidence.** "Disconnect" means
+  exactly two things: delete the stored app password from OS secure
+  storage, and mark the account `disconnected` in the database. Every
+  `Communication`, `CommunicationAttachment`, import batch/batch item,
+  `Communication`↔`Document` provenance link, `Document`, custody event,
+  timeline suggestion, and full-text search entry already produced
+  through that account is untouched and stays exactly as usable —
+  including offline, with the Yahoo account never reconnected again.
+  Only further *Yahoo-dependent* work (testing the connection, browsing/
+  searching the live mailbox, starting or resuming an import) becomes
+  unavailable until the account is reconnected.
+- **An unfinished import batch is never silently retried or lost.** If a
+  batch still has `pending`/`failed` items when its account is
+  disconnected, those items stay exactly as they are — not reprocessed,
+  not deleted, not marked invalid. Resuming or retrying such a batch is
+  a safe no-op while the account has no valid connected credential (no
+  network attempt is made), and the batch's status page explains that
+  reconnecting the account is required before that work can continue.
+- **Reconnecting the same Yahoo address reactivates the existing
+  account** rather than creating a second logical account record —
+  every `Communication` already imported through it, and the
+  account-scoped duplicate-import detection Step 10 relies on, both
+  stay correctly associated with the one account identity. Reconnecting
+  never re-imports anything automatically and never resumes a batch on
+  its own; both require an explicit, separate user action, same as a
+  first-time import.
+- **A missing or revoked credential fails closed, safely.** If the OS
+  secure credential store no longer has an entry for a `connected`
+  account (deleted outside FERChronos, or the underlying app password
+  was revoked in Yahoo), every route that would need it — test
+  connection, browse, import — returns a plain, safe error message
+  ("reconnect this account") and changes nothing; the account's
+  `credential_ref` (an opaque lookup key, never the secret itself) is
+  never echoed back, and no already-imported `Communication`,
+  `CommunicationAttachment`, or `Document` is ever touched, marked
+  invalid, or deleted because of an authentication failure. This is
+  always treated as a connection problem, never as evidence corruption.
+- **No language anywhere implies a continuous, live connection.** The
+  Communications UI's account status distinguishes "Connected" (a valid
+  credential is present) from "Credential unavailable" (the database
+  says connected, but the OS credential store currently has nothing for
+  it) from "Disconnected," and reiterates on every disconnected/
+  credential-unavailable account row that its already-imported evidence
+  remains local and fully usable. There is no background sync of any
+  kind to describe as "live" in the first place — see §2.1 above.
+
+### 2.3 Saved-email formats accepted, and why (Communications Phase Step 8)
+
+- `.eml` (single message, manual upload) and `.mbox`/`.mbx` (an archive
+  split into its individual original messages, each imported the same
+  way as a single `.eml`) are the only saved-email formats FERChronos
+  parses today. Both work with zero Yahoo account involvement.
+- `.msg` (Outlook/MAPI) was evaluated and deliberately left unsupported
+  for now — see `docs/COMMUNICATIONS_PLAN.md` Step 8 for the full
+  investigation. It is not silently converted or guessed at.
+- A PDF or screenshot *of* an email is never treated as a `Communication`
+  — it has no parseable original headers/threading data to preserve —
+  and is instead ingested as a normal `Document`, exactly like any other
+  scanned or exported file.
 
 ## 3. Original record integrity (read-only originals)
 

@@ -216,6 +216,48 @@ def test_retry_failed_items_no_op_when_none_failed(db_session: Session, sample_a
     assert batch.status == "pending"
 
 
+def test_resume_batch_no_op_when_account_disconnected(db_session: Session, sample_account, sample_case):
+    """Step 12: resuming a failed batch must never re-arm it for the
+    worker while its account has no valid connected credential -- doing
+    so would only cost a pointless running-then-failed cycle. The batch
+    stays exactly `failed` until the account is reconnected.
+    """
+    batch = create_batch(db_session, sample_account, sample_case, [("INBOX", "1")], {}, "test-user")
+    batch.status = "failed"
+    sample_account.status = "disconnected"
+    db_session.commit()
+
+    resume_batch(db_session, batch)
+
+    assert batch.status == "failed"
+
+
+def test_retry_failed_items_no_op_when_account_disconnected(db_session: Session, sample_account, sample_case):
+    """Step 12: same reasoning as resume_batch -- resetting failed items
+    to pending is pointless (and misleading) while the account has no
+    valid connected credential.
+    """
+    batch = create_batch(db_session, sample_account, sample_case, [("INBOX", "1"), ("INBOX", "2")], {}, "test-user")
+    items = (
+        db_session.query(CommunicationImportBatchItem)
+        .filter(CommunicationImportBatchItem.batch_id == batch.batch_id)
+        .all()
+    )
+    items[0].status = "failed"
+    items[0].error = "some safe error"
+    batch.failed_count = 1
+    batch.status = "completed_with_errors"
+    sample_account.status = "disconnected"
+    db_session.commit()
+
+    reset_count = retry_failed_items(db_session, batch)
+
+    assert reset_count == 0
+    db_session.refresh(items[0])
+    assert items[0].status == "failed"
+    assert batch.status == "completed_with_errors"
+
+
 def test_count_remaining(db_session: Session, sample_account, sample_case):
     batch = create_batch(
         db_session, sample_account, sample_case, [("INBOX", "1"), ("INBOX", "2"), ("INBOX", "3")], {}, "test-user"
