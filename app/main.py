@@ -42,7 +42,16 @@ from app.core.auth.session import get_current_session
 from app.core.vault import VaultLayout, init_vault
 from app.db.migrate import run_migrations
 from app.db.models import AppSession, Case
-from app.db.seed import seed_annotation_types, seed_document_types, seed_event_types, seed_fact_types
+from app.db.seed import (
+    seed_annotation_types,
+    seed_document_types,
+    seed_event_types,
+    seed_fact_types,
+    seed_iep_document_link_types,
+    seed_iep_field_types,
+    seed_iep_inconsistency_types,
+    seed_iep_record_types,
+)
 from app.db.session import make_engine, make_session_factory
 from app.jobs.import_worker import run_import_worker_loop
 from app.jobs.worker import run_worker_loop, sweep_stuck_jobs
@@ -99,6 +108,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed_annotation_types(db)
         seed_fact_types(db)
         seed_event_types(db)
+        seed_iep_record_types(db)
+        seed_iep_field_types(db)
+        seed_iep_inconsistency_types(db)
+        seed_iep_document_link_types(db)
 
     with session_factory() as db:
         # Any OCR job still "running" at this point was left that way by

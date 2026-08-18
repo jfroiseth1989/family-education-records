@@ -114,6 +114,25 @@ before implementation began:
                                   Step 1). Deliberately not append-only,
                                   unlike every other table here -- see the
                                   AppSession docstring for why.
+  - `iep_record_types` /
+    `iep_field_types` /
+    `iep_inconsistency_types` /
+    `iep_document_link_types`     — lookup tables for the IEP Consistency
+                                  Review feature (see
+                                  docs/IEP_CONSISTENCY_REVIEW_PLAN.md).
+  - `iep_records` / `iep_record_fields` — structured data points extracted
+                                  from an IEP-family document or a
+                                  communication, for deterministic
+                                  cross-document comparison (Step 1:
+                                  schema only, no extraction yet).
+  - `iep_document_links`         — a narrowly-scoped, IEP-specific
+                                  equivalent of the never-built
+                                  relationship graph, for "this amends
+                                  that" / "this evaluation informed that
+                                  IEP" style relationships.
+  - `iep_inconsistency_flags`    — possible inconsistencies pending human
+                                  review; never an automatic
+                                  legal-violation determination.
 """
 
 from __future__ import annotations
@@ -1742,3 +1761,358 @@ class CommunicationImportBatchItem(Base):
 
     batch: Mapped["CommunicationImportBatch"] = relationship(back_populates="items")
     communication: Mapped["Communication | None"] = relationship()
+
+
+# --- IEP Consistency Review (Step 1: schema only) --------------------------
+#
+# See docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2 for the full design and the
+# rationale for this exact shape -- in short: `verified_facts`/
+# `ai_observations` are atomic single-statement/single-date claims, the
+# wrong shape for a multi-field structured record (a service has a name,
+# provider, minutes, frequency, location -- all independently comparable).
+# This is a hybrid of the existing lookup-table extensibility pattern
+# (`document_types`/`fact_types`/`event_types` -- a new kind is a row
+# insert, never a migration) plus an identity/typed-value-row pair
+# (`iep_records`/`iep_record_fields`) that avoids both a sparse wide table
+# and brittle free-text/EAV storage.
+#
+# Every table below is new; nothing existing is altered. No column is
+# added to `documents`, `citations`, `communications`, `verified_facts`,
+# or `timeline_events` -- every relationship a new table needs to an
+# existing one is a plain FK plus a one-directional `relationship()` here,
+# never a `back_populates` edit to an existing class (see §10 of the
+# plan). Step 1 adds only the schema and seeded lookup rows -- no
+# extraction, no comparison, no UI, no behavior; that starts in Step 2.
+
+
+class IepRecordType(Base):
+    """Lookup table: what kind of structural unit an `iep_records` row
+    represents (a service line, a goal, an accommodation, ...).
+
+    Same extensibility pattern as `document_types`/`fact_types`/
+    `event_types` -- a new record type later is a row insert, never a
+    migration. Seeded by `app/db/seed.py::seed_iep_record_types()`. See
+    docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.2.
+    """
+
+    __tablename__ = "iep_record_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class IepFieldType(Base):
+    """Lookup table: what kind of individual value a `iep_record_fields`
+    row holds, and how it should be compared.
+
+    `value_kind` (`text` / `number` / `date`) tells the future
+    deterministic comparison engine (docs/IEP_CONSISTENCY_REVIEW_PLAN.md
+    §4, not built in Step 1) which of `text_value`/`numeric_value`/
+    `date_value` on a field row is the one that matters, without the
+    comparison code needing a hardcoded switch on `name`. Same
+    row-insert extensibility as `IepRecordType`. Seeded by
+    `app/db/seed.py::seed_iep_field_types()`.
+    """
+
+    __tablename__ = "iep_field_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    # text / number / date -- see class docstring.
+    value_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class IepInconsistencyType(Base):
+    """Lookup table: what kind of flag an `iep_inconsistency_flags` row
+    represents (e.g. a service-minutes mismatch, a missing goal for an
+    identified need).
+
+    Same row-insert extensibility as `IepRecordType`. Seeded by
+    `app/db/seed.py::seed_iep_inconsistency_types()`. Drives the fixed,
+    neutral `IepInconsistencyFlag.reason_text` template a future rule
+    engine composes from -- see docs/IEP_CONSISTENCY_REVIEW_PLAN.md §9's
+    "the legal-boundary rule is enforced in code" discussion: no flag's
+    reason text is ever free-form or user-typed at generation time.
+    """
+
+    __tablename__ = "iep_inconsistency_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class IepDocumentLinkType(Base):
+    """Lookup table: how one document/communication relates to another
+    for consistency-comparison purposes (prior IEP to current IEP, an
+    Evaluation to the IEP it informed, a Prior Written Notice to its
+    IEP, ...).
+
+    This is a narrowly-scoped, IEP-specific equivalent of the
+    relationship graph docs/ARCHITECTURE.md §3.9 describes but that was
+    never built (see docs/IEP_CONSISTENCY_REVIEW_PLAN.md §0/§5) -- not a
+    reuse of `document_version_groups`, whose "exactly one current
+    version" semantics don't fit "this amendment modifies that annual
+    IEP, both remain live records." Same row-insert extensibility as
+    `IepRecordType`. Seeded by
+    `app/db/seed.py::seed_iep_document_link_types()`.
+    """
+
+    __tablename__ = "iep_document_link_types"
+
+    type_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class IepRecord(Base):
+    """One logical extracted structural unit -- one service line, one
+    goal, one accommodation -- from one source document or communication.
+
+    The same real-world service mentioned in two places in one IEP (a
+    services table on page 4 *and* a summary table on page 9) is
+    deliberately **two separate rows**, each with its own
+    `section_label` -- that is what makes "duplicated section with
+    different values" comparable at all, rather than silently merged.
+    See docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.3.
+
+    Exactly one of `document_id`/`communication_id` is set, validated at
+    the application layer in the same transaction as the write (not yet
+    built in Step 1 -- this is schema-only) -- mirroring
+    `AiObservation.communication_id`'s exact precedent for "a
+    Communication has no page/offset citation concept, so it needs its
+    own direct anchor alongside the Document-shaped path."
+    `comparison_key` is a deterministically normalized identity string
+    (never a fuzzy/similarity score) a future matching step uses to pair
+    "the same real-world thing" across records -- see §2.3/§4 of the
+    plan for why a normalization miss produces silence, never a wrong
+    flag. `status` is the one correction a human has over a specific
+    extraction without a full edit UI: `active` (default) or `excluded`
+    ("this extraction is wrong or garbage, stop comparing it") --
+    excluding a record never deletes it or affects any flag already
+    raised from it (see `IepInconsistencyFlag.extracted_value_a/b`).
+    """
+
+    __tablename__ = "iep_records"
+
+    record_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Denormalized for case-scoped queries -- same convenience
+    # denormalization AiObservation.case_id already uses.
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=True
+    )
+    communication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=True
+    )
+    record_type_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_record_types.type_id"), nullable=False
+    )
+    section_label: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    comparison_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # active / excluded -- see class docstring.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    # e.g. "iep-service-line-regex-v1", "manual" -- same explainable/
+    # versioned convention as AiObservation.method.
+    extraction_method: Mapped[str] = mapped_column(String(100), nullable=False)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    case: Mapped["Case"] = relationship()
+    document: Mapped["Document | None"] = relationship()
+    communication: Mapped["Communication | None"] = relationship()
+    record_type: Mapped["IepRecordType"] = relationship()
+    fields: Mapped[list["IepRecordField"]] = relationship(
+        back_populates="record", cascade="all, delete-orphan"
+    )
+
+
+class IepRecordField(Base):
+    """One individual typed value belonging to one `iep_records` row
+    (e.g. this service's `minutes`, or its `frequency_period`).
+
+    Only one of `text_value`/`numeric_value`/`date_value` is meaningful
+    for a given row, per its `field_type.value_kind` -- not enforced at
+    the database level (SQLite has no clean way to make a column
+    NOT-NULL conditional on another row's value), same style as every
+    other type-conditional validation in this app (see e.g.
+    `VerifiedFact.fact_date`'s docstring). `citation_id` is nullable only
+    because a Communication-sourced field (via its parent record's
+    `communication_id`) has no page/offset citation concept -- required
+    whenever the parent record's `document_id` is set, enforced at the
+    application layer, not yet built in Step 1. See
+    docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.3.
+    """
+
+    __tablename__ = "iep_record_fields"
+
+    field_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    record_id: Mapped[int] = mapped_column(ForeignKey("iep_records.record_id"), nullable=False)
+    field_type_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_field_types.type_id"), nullable=False
+    )
+    text_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    numeric_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    date_value: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # e.g. "week"/"month"/"session" for a frequency_period field -- most
+    # field types imply their own unit and leave this null.
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    citation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("citations.citation_id"), nullable=True
+    )
+    # Populated only when the extractor itself produces a confidence
+    # (e.g. from effective_text()'s OCR confidence) -- never used to
+    # suppress or soften a flag; a low-confidence value either got
+    # extracted (compared normally) or didn't (no row at all). See
+    # docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.3's "never a guess" note.
+    extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    record: Mapped["IepRecord"] = relationship(back_populates="fields")
+    field_type: Mapped["IepFieldType"] = relationship()
+    citation: Mapped["Citation | None"] = relationship()
+
+
+class IepDocumentLink(Base):
+    """A suggested or confirmed relationship between two sources for
+    consistency-comparison purposes (e.g. "this is the amendment of that
+    annual IEP", "this Evaluation informed that IEP").
+
+    Mirrors the exact verified/suggested split already established for
+    facts (`verified_facts`/`ai_observations`) and, in the never-built
+    relationship graph design, for relationships
+    (`verified_relationships`/`ai_suggested_relationships`) -- see
+    docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.3/§5. **Only a `confirmed` row
+    is ever used by the (not yet built) comparison engine** -- a
+    `pending_review` suggestion is inert until a human acts on it; there
+    is no code path from a suggestion to a comparison run. Exactly one
+    of `to_document_id`/`to_communication_id` is set, validated at the
+    application layer (not yet built in Step 1), same pattern as
+    `IepRecord.document_id`/`communication_id`.
+    """
+
+    __tablename__ = "iep_document_links"
+
+    link_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    link_type_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_document_link_types.type_id"), nullable=False
+    )
+    from_document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=False
+    )
+    to_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.document_id"), nullable=True
+    )
+    to_communication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("communications.communication_id"), nullable=True
+    )
+    # pending_review / confirmed / dismissed -- see class docstring.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending_review", server_default="pending_review"
+    )
+    # e.g. "manual", "same-case-chronological-iep-heuristic-v1".
+    method: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    case: Mapped["Case"] = relationship()
+    link_type: Mapped["IepDocumentLinkType"] = relationship()
+    from_document: Mapped["Document"] = relationship(foreign_keys=[from_document_id])
+    to_document: Mapped["Document | None"] = relationship(foreign_keys=[to_document_id])
+    to_communication: Mapped["Communication | None"] = relationship()
+
+
+class IepInconsistencyFlag(Base):
+    """One possible inconsistency identified between two `iep_records`
+    (or specific fields of them), pending human review.
+
+    See docs/IEP_CONSISTENCY_REVIEW_PLAN.md §2.4/§7 for the full review
+    lifecycle. `status` is exactly `pending` / `confirmed` / `dismissed`
+    -- never auto-set to `confirmed` by any rule; "confirmed" always
+    means a human looked at both sources and agreed. `reason_text` is
+    composed from a small set of fixed, neutral templates by whatever
+    rule created the flag (not built in Step 1) -- never free text at
+    generation time, same "fixed, app-enforced constant" discipline
+    `AiSummary.label_text` already uses, so no code path can render a
+    conclusory legal term here. `extracted_value_a`/`extracted_value_b`
+    snapshot exactly what was compared at flag-creation time,
+    independent of whatever the live `iep_record_fields` rows might show
+    later (e.g. after a source record is `excluded`) -- same
+    snapshot-at-event discipline `DocumentCustodyEvent.sha256_hash_at_event`
+    already uses. `dedup_key` (unique together with `case_id`) is a
+    deterministic hash of the comparison's identity (rule + both
+    sources) -- the mechanism that makes re-running analysis idempotent:
+    re-detecting the same comparison never creates a second `pending`
+    row, and never resurrects a `confirmed`/`dismissed` flag as fresh.
+    """
+
+    __tablename__ = "iep_inconsistency_flags"
+    __table_args__ = (
+        UniqueConstraint("case_id", "dedup_key", name="uq_iep_flag_case_dedup_key"),
+    )
+
+    flag_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.case_id"), nullable=False)
+    inconsistency_type_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_inconsistency_types.type_id"), nullable=False
+    )
+    # within_document / across_document.
+    comparison_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_a_record_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_records.record_id"), nullable=False
+    )
+    source_a_field_id: Mapped[int | None] = mapped_column(
+        ForeignKey("iep_record_fields.field_id"), nullable=True
+    )
+    source_b_record_id: Mapped[int] = mapped_column(
+        ForeignKey("iep_records.record_id"), nullable=False
+    )
+    source_b_field_id: Mapped[int | None] = mapped_column(
+        ForeignKey("iep_record_fields.field_id"), nullable=True
+    )
+    # e.g. "service_schedule_mismatch_v1" -- the specific versioned
+    # deterministic rule that produced this flag.
+    rule_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason_text: Mapped[str] = mapped_column(Text, nullable=False)
+    extracted_value_a: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    extracted_value_b: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # pending / confirmed / dismissed -- see class docstring.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    user_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    linked_timeline_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("timeline_events.event_id"), nullable=True
+    )
+    linked_verified_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("verified_facts.fact_id"), nullable=True
+    )
+    dedup_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    case: Mapped["Case"] = relationship()
+    inconsistency_type: Mapped["IepInconsistencyType"] = relationship()
+    source_a_record: Mapped["IepRecord"] = relationship(foreign_keys=[source_a_record_id])
+    source_a_field: Mapped["IepRecordField | None"] = relationship(foreign_keys=[source_a_field_id])
+    source_b_record: Mapped["IepRecord"] = relationship(foreign_keys=[source_b_record_id])
+    source_b_field: Mapped["IepRecordField | None"] = relationship(foreign_keys=[source_b_field_id])
+    linked_timeline_event: Mapped["TimelineEvent | None"] = relationship()
+    linked_verified_fact: Mapped["VerifiedFact | None"] = relationship()

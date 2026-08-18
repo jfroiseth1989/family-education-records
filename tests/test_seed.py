@@ -5,14 +5,30 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import DocumentType, EventType, FactType
+from app.db.models import (
+    DocumentType,
+    EventType,
+    FactType,
+    IepDocumentLinkType,
+    IepFieldType,
+    IepInconsistencyType,
+    IepRecordType,
+)
 from app.db.seed import (
     DEFAULT_DOCUMENT_TYPES,
     DEFAULT_EVENT_TYPES,
     DEFAULT_FACT_TYPES,
+    DEFAULT_IEP_DOCUMENT_LINK_TYPES,
+    DEFAULT_IEP_FIELD_TYPES,
+    DEFAULT_IEP_INCONSISTENCY_TYPES,
+    DEFAULT_IEP_RECORD_TYPES,
     seed_document_types,
     seed_event_types,
     seed_fact_types,
+    seed_iep_document_link_types,
+    seed_iep_field_types,
+    seed_iep_inconsistency_types,
+    seed_iep_record_types,
 )
 
 
@@ -116,3 +132,59 @@ def test_seed_event_types_is_idempotent(db_session: Session):
 
     names = db_session.scalars(select(EventType.name)).all()
     assert len(names) == len(DEFAULT_EVENT_TYPES)
+
+
+def test_seed_iep_record_types_inserts_defaults(db_session: Session):
+    names = set(db_session.scalars(select(IepRecordType.name)))
+    assert names == {name for name, _ in DEFAULT_IEP_RECORD_TYPES}
+
+
+def test_seed_iep_record_types_is_idempotent(db_session: Session):
+    seed_iep_record_types(db_session)
+    seed_iep_record_types(db_session)
+
+    names = db_session.scalars(select(IepRecordType.name)).all()
+    assert len(names) == len(DEFAULT_IEP_RECORD_TYPES)
+
+
+def test_seed_iep_field_types_inserts_defaults_with_value_kind(db_session: Session):
+    rows = db_session.scalars(select(IepFieldType)).all()
+    by_name = {row.name: row.value_kind for row in rows}
+    assert by_name == {name: value_kind for name, value_kind, _ in DEFAULT_IEP_FIELD_TYPES}
+    assert by_name["minutes"] == "number"
+    assert by_name["service_name"] == "text"
+    assert by_name["start_date"] == "date"
+
+
+def test_seed_iep_field_types_is_idempotent(db_session: Session):
+    seed_iep_field_types(db_session)
+    seed_iep_field_types(db_session)
+
+    names = db_session.scalars(select(IepFieldType.name)).all()
+    assert len(names) == len(DEFAULT_IEP_FIELD_TYPES)
+
+
+def test_seed_iep_inconsistency_types_inserts_defaults(db_session: Session):
+    names = set(db_session.scalars(select(IepInconsistencyType.name)))
+    assert names == {name for name, _ in DEFAULT_IEP_INCONSISTENCY_TYPES}
+
+
+def test_seed_iep_inconsistency_types_is_idempotent(db_session: Session):
+    seed_iep_inconsistency_types(db_session)
+    seed_iep_inconsistency_types(db_session)
+
+    names = db_session.scalars(select(IepInconsistencyType.name)).all()
+    assert len(names) == len(DEFAULT_IEP_INCONSISTENCY_TYPES)
+
+
+def test_seed_iep_document_link_types_inserts_defaults(db_session: Session):
+    names = set(db_session.scalars(select(IepDocumentLinkType.name)))
+    assert names == {name for name, _ in DEFAULT_IEP_DOCUMENT_LINK_TYPES}
+
+
+def test_seed_iep_document_link_types_is_idempotent(db_session: Session):
+    seed_iep_document_link_types(db_session)
+    seed_iep_document_link_types(db_session)
+
+    names = db_session.scalars(select(IepDocumentLinkType.name)).all()
+    assert len(names) == len(DEFAULT_IEP_DOCUMENT_LINK_TYPES)
