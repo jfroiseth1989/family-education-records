@@ -38,6 +38,8 @@ from app.db.models import (
     DocumentDatePrecision,
     DocumentDateSource,
     DocumentType,
+    IepRecord,
+    IepRecordType,
 )
 
 router = APIRouter(tags=["documents"])
@@ -451,9 +453,41 @@ def _native_text_sample(original_filename: str, temp_path: Path) -> str:
     return "\n".join(page.text or "" for page in result.pages[:3])
 
 
+def _iep_service_record_views(db: Session, document_id: int) -> list[dict]:
+    """This document's service-type `iep_records`, each paired with a
+    display-friendly `field_type name -> value` map (IEP Consistency
+    Review Step 2). Read-only -- never writes anything.
+    """
+    records = list(
+        db.scalars(
+            select(IepRecord)
+            .join(IepRecordType, IepRecordType.type_id == IepRecord.record_type_id)
+            .where(IepRecord.document_id == document_id, IepRecordType.name == "service")
+            .order_by(IepRecord.extracted_at.desc())
+        ).all()
+    )
+    views = []
+    for record in records:
+        values: dict[str, str] = {}
+        for field in record.fields:
+            if field.numeric_value is not None:
+                numeric = field.numeric_value
+                values[field.field_type.name] = (
+                    str(int(numeric)) if numeric == int(numeric) else str(numeric)
+                )
+            elif field.text_value is not None:
+                values[field.field_type.name] = field.text_value
+        views.append({"record": record, "values": values})
+    return views
+
+
 @router.get("/documents/{document_id}", response_class=HTMLResponse)
 def get_document(
-    request: Request, document_id: int, date_scan: int | None = None, db: Session = Depends(get_db)
+    request: Request,
+    document_id: int,
+    date_scan: int | None = None,
+    iep_scan_found: int | None = None,
+    db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """Render a document's detail page: metadata, custody log, and version history."""
     document = _get_document_or_404(db, document_id)
@@ -517,6 +551,8 @@ def get_document(
             "type_suggestion": type_suggestion,
             "date_suggestions": date_suggestions,
             "communication_links": communication_links,
+            "iep_scan_result": iep_scan_found,
+            "iep_service_records": _iep_service_record_views(db, document.document_id),
         },
     )
 

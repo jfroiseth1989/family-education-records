@@ -69,6 +69,43 @@
         </label>
         <button type="submit">Save highlight</button>
         <button type="button" id="highlight-cancel" class="btn-secondary">Cancel</button>
+
+        <fieldset>
+          <legend>Or add as an IEP service record (IEP Consistency Review)</legend>
+          <p class="hint">
+            Fills in a structured service record from this same selection —
+            the quoted text is still taken directly from the page's stored
+            extraction, never from the browser. Service name is required;
+            everything else is optional.
+          </p>
+          <label>
+            Service name
+            <input type="text" name="service_name" maxlength="150" placeholder="e.g. Speech-language therapy">
+          </label>
+          <label>
+            Minutes
+            <input type="number" name="minutes" min="1" max="600" step="1">
+          </label>
+          <label>
+            Frequency count
+            <input type="number" name="frequency_count" min="1" max="31" step="1">
+          </label>
+          <label>
+            Frequency period
+            <input type="text" name="frequency_period" maxlength="50" placeholder="e.g. week">
+          </label>
+          <label>
+            Location (optional)
+            <input type="text" name="location" maxlength="150">
+          </label>
+          <label>
+            Provider (optional)
+            <input type="text" name="provider" maxlength="150">
+          </label>
+          <button type="submit" formaction="/documents/{{ document.document_id }}/iep-records/service">
+            Save as service record
+          </button>
+        </fieldset>
       </form>
     </section>
 

@@ -31,6 +31,7 @@ from app.api import (
     communications,
     documents,
     facts,
+    iep_consistency,
     ocr,
     search,
     tags,
@@ -180,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(communications.router)
     app.include_router(documents.router)
     app.include_router(facts.router)
+    app.include_router(iep_consistency.router)
     app.include_router(ocr.router)
     app.include_router(search.router)
     app.include_router(tags.router)

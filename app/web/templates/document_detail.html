@@ -230,6 +230,84 @@
   </section>
 
   <section class="panel">
+    <h2>Extracted structured data (IEP Consistency Review)</h2>
+    {% if iep_scan_result is not none %}
+      <p class="hint">
+        {% if iep_scan_result > 0 %}
+          Found {{ iep_scan_result }} new service record{{ "s" if iep_scan_result != 1 else "" }} — a suggestion to review, not an asserted fact.
+        {% else %}
+          No new service records found (already-detected lines are skipped on repeat scans).
+        {% endif %}
+      </p>
+    {% endif %}
+    <p class="hint">
+      Scans this document's text for service lines (name, minutes,
+      frequency) using fixed patterns only — no AI or cloud service.
+      Each match is a suggestion citing the exact line it was found in;
+      it is never treated as confirmed until a human reviews it. Exclude
+      any extraction that's wrong — this never deletes it or affects any
+      review that already used it. You can also
+      <a href="/documents/{{ document.document_id }}/view">select text in the viewer</a>
+      to add a service entry by hand.
+    </p>
+    <form method="post" action="/documents/{{ document.document_id }}/iep-records/scan">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+      <button type="submit">Scan for services</button>
+    </form>
+    {% if iep_service_records %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Service</th><th>Minutes</th><th>Frequency</th><th>Location</th>
+            <th>Provider</th><th>Section</th><th>Source</th><th>Status</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for view in iep_service_records %}
+            {% set record = view.record %}
+            {% set values = view['values'] %}
+            <tr>
+              <td>{{ values.service_name or "—" }}</td>
+              <td>{{ values.minutes or "—" }}</td>
+              <td>
+                {% if values.frequency_count and values.frequency_period %}
+                  {{ values.frequency_count }}x/{{ values.frequency_period }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ values.location or "—" }}</td>
+              <td>{{ values.provider or "—" }}</td>
+              <td>{{ record.section_label or "—" }}</td>
+              <td>{{ record.extraction_method }}</td>
+              <td>
+                <span class="status-badge {{ 'status-superseded' if record.status == 'excluded' else 'status-current' }}">
+                  {{ record.status }}
+                </span>
+              </td>
+              <td>
+                {% if record.status == "active" %}
+                  <form method="post" action="/iep-records/{{ record.record_id }}/exclude" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+                    <button type="submit" class="btn-secondary">Exclude</button>
+                  </form>
+                {% else %}
+                  <form method="post" action="/iep-records/{{ record.record_id }}/restore" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+                    <button type="submit" class="btn-secondary">Restore</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No structured service data extracted yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
     <h2>Annotations</h2>
     <p>
       {{ annotation_counts.highlight }} highlight{{ "s" if annotation_counts.highlight != 1 else "" }},
