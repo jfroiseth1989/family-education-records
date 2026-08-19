@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Consistency Review — {{ case.display_name }} — FERChronos{% endblock %}
+{% block content %}
+  <p><a href="/cases/{{ case.case_id }}">&larr; {{ case.display_name }}</a></p>
+  <h1>Consistency Review — {{ case.display_name }}</h1>
+  <p class="hint">
+    Compares structured data already extracted or manually entered on
+    this student's documents (see each document's "Extracted structured
+    data" panel) using fixed, deterministic rules only — no AI or cloud
+    service, and no judgment about whether a difference is meaningful.
+    A flag means two sources state something differently; it is never
+    an assertion that anything is wrong, noncompliant, or a legal
+    violation. Only you decide that, by confirming or dismissing a flag
+    below.
+  </p>
+
+  <section class="panel">
+    <h2>Scan for inconsistencies</h2>
+    {% if scan_result is not none %}
+      <p class="hint">
+        {% if scan_result | int > 0 %}
+          Found {{ scan_result }} new possible inconsistenc{{ "y" if scan_result | int == 1 else "ies" }} — each is a suggestion to review, not a finding.
+        {% else %}
+          No new inconsistencies found (already-flagged comparisons are skipped on repeat scans).
+        {% endif %}
+      </p>
+    {% endif %}
+    <p class="hint">
+      Compares service records within each document (e.g. a Services
+      section vs. a Summary section stating different minutes or
+      frequency for the same service). Safe to re-run at any time —
+      already-flagged comparisons are never duplicated, and a flag you
+      already confirmed or dismissed is never recreated.
+    </p>
+    <form method="post" action="/cases/{{ case.case_id }}/consistency/scan">
+      <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+      <button type="submit">Scan for inconsistencies</button>
+    </form>
+  </section>
+
+  {% macro flag_card(flag) %}
+    <div class="panel">
+      <p>
+        <strong>Possible service inconsistency</strong>
+        <span class="status-badge {{ 'status-current' if flag.status == 'confirmed' else ('status-archived' if flag.status == 'dismissed' else 'status-needs-ocr') }}">
+          {{ flag.status }}
+        </span>
+      </p>
+      <p>
+        <strong>Source A:</strong>
+        {% if flag.source_a_record and flag.source_a_record.document %}
+          <a href="/documents/{{ flag.source_a_record.document_id }}">{{ flag.source_a_record.document.original_filename }}</a>
+        {% else %}
+          (source record no longer available)
+        {% endif %}
+        {% if flag.extracted_value_a and flag.extracted_value_a.section_label %} — {{ flag.extracted_value_a.section_label }}{% endif %}
+        <br>
+        &ldquo;{{ (flag.extracted_value_a.quoted_text if flag.extracted_value_a else None) or "—" }}&rdquo;
+      </p>
+      <p>
+        <strong>Source B:</strong>
+        {% if flag.source_b_record and flag.source_b_record.document %}
+          <a href="/documents/{{ flag.source_b_record.document_id }}">{{ flag.source_b_record.document.original_filename }}</a>
+        {% else %}
+          (source record no longer available)
+        {% endif %}
+        {% if flag.extracted_value_b and flag.extracted_value_b.section_label %} — {{ flag.extracted_value_b.section_label }}{% endif %}
+        <br>
+        &ldquo;{{ (flag.extracted_value_b.quoted_text if flag.extracted_value_b else None) or "—" }}&rdquo;
+      </p>
+      <p><strong>Reason flagged:</strong> {{ flag.reason_text }}</p>
+      {% if flag.source_a_record and flag.source_a_record.status == "excluded" or flag.source_b_record and flag.source_b_record.status == "excluded" %}
+        <p class="hint">One of this flag's source records has since been excluded. The comparison above still reflects what was true when this flag was created.</p>
+      {% endif %}
+      {% if flag.user_note %}
+        <p class="hint">Note: {{ flag.user_note }}</p>
+      {% endif %}
+      <p class="meta">
+        Type: {{ flag.inconsistency_type.name }} · Rule: {{ flag.rule_id }} · Flagged {{ flag.created_at }}
+        {% if flag.reviewed_by %} · Reviewed by {{ flag.reviewed_by }} on {{ flag.reviewed_at }}{% endif %}
+      </p>
+
+      {% if flag.status != "confirmed" %}
+        <form method="post" action="/cases/{{ case.case_id }}/consistency/flags/{{ flag.flag_id }}/confirm" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <button type="submit">Confirm inconsistency</button>
+        </form>
+      {% endif %}
+      {% if flag.status != "dismissed" %}
+        <form method="post" action="/cases/{{ case.case_id }}/consistency/flags/{{ flag.flag_id }}/dismiss" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <button type="submit" class="btn-secondary">Mark not an inconsistency</button>
+        </form>
+      {% endif %}
+      <details>
+        <summary>{{ "Edit note" if flag.user_note else "Add note" }}</summary>
+        <form method="post" action="/cases/{{ case.case_id }}/consistency/flags/{{ flag.flag_id }}/note">
+          <input type="hidden" name="csrf_token" value="{{ request.cookies.get('csrf_token', '') }}">
+          <textarea name="note_text" rows="2" placeholder="Your own words -- never generated by FERChronos.">{{ flag.user_note or "" }}</textarea>
+          <button type="submit">Save note</button>
+        </form>
+      </details>
+    </div>
+  {% endmacro %}
+
+  <section>
+    <h2>Pending ({{ pending_flags | length }})</h2>
+    {% if pending_flags %}
+      {% for flag in pending_flags %}{{ flag_card(flag) }}{% endfor %}
+    {% else %}
+      <p class="empty-state">No pending flags.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Confirmed ({{ confirmed_flags | length }})</h2>
+    {% if confirmed_flags %}
+      {% for flag in confirmed_flags %}{{ flag_card(flag) }}{% endfor %}
+    {% else %}
+      <p class="empty-state">No confirmed flags.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Dismissed ({{ dismissed_flags | length }})</h2>
+    {% if dismissed_flags %}
+      {% for flag in dismissed_flags %}{{ flag_card(flag) }}{% endfor %}
+    {% else %}
+      <p class="empty-state">No dismissed flags.</p>
+    {% endif %}
+  </section>
+{% endblock %}
